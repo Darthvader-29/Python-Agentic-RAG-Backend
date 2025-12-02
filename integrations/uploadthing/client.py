@@ -13,7 +13,7 @@ API_KEY = os.getenv("UPLOADTHING_API_KEY")
 if not API_KEY:
     raise ValueError("Missing UPLOADTHING_API_KEY in .env file")
 
-BASE_URL = "https://uploadthing.com/api/v6" #same for all other functions(Delete files, request file access, rename file, etc) but this time only used for uploading
+BASE_URL = "https://api.uploadthing.com/v6" #same for all other functions(Delete files, request file access, rename file, etc) but this time only used for uploading
 
 class UploadThingClient:
     def __init__(self):

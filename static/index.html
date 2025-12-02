@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dynamic RAG Engine</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-container">
+    <div class="chat-window" id="chat-window">
+      <!-- Messages will be appended here -->
+    </div>
+
+    <div class="input-bar">
+      <button id="upload-btn">📄 Upload</button>
+
+      <label class="toggle">
+        <input type="checkbox" id="web-toggle" checked />
+        <span>Web Search</span>
+      </label>
+
+      <input
+        id="user-input"
+        type="text"
+        placeholder="Type your question..."
+        autocomplete="off"
+      />
+
+      <button id="send-btn">➤</button>
+    </div>
+  </div>
+
+  <input id="file-input" type="file" accept=".pdf,.docx" style="display:none" />
+
+  <script src="/static/script.js"></script>
+</body>
+</html>

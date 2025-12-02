@@ -20,7 +20,7 @@ def get_index():
         print(f"Creating new Pinecone index: {INDEX_NAME}")
         pc.create_index(
             name=INDEX_NAME,
-            dimension=1536, # OpenAI embedding size
+            dimension=768, # gemini embedding size
             metric="cosine",
             spec=ServerlessSpec(
                 cloud="aws",
