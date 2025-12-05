@@ -1,98 +1,42 @@
-#!/usr/bin/env python3
-"""
-Retrieval System Test with MOCK DATA
-No Pinecone or real DB required!
-"""
+import pytest
+from unittest.mock import patch, MagicMock
+from components.retrieval import retrieve_context
 
-import sys
-import os
-
-# Fix import path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from components.router import route_query
-from components.retrieval import RetrievalResult
-from pydantic import BaseModel
-
-# MOCK Pinecone Results (fake data)
-MOCK_PINECONE_RESULTS = [
-    {
-        "text": "This document outlines company leave policies including vacation time and sick leave...",
-        "score": 0.92,
-        "source": "company_policy.pdf"
-    },
-    {
-        "text": "Section 3.2: Employees are entitled to 15 days PTO per year...",
-        "score": 0.87,
-        "source": "company_policy.pdf"
-    }
-]
-
-# MOCK DuckDuckGo Results (fake web data)
-MOCK_WEB_RESULTS = [
-    {
-        "text": "Tesla stock price is $248.45 (NASDAQ: TSLA) as of market close today.",
-        "score": 1.0,
-        "source": "Yahoo Finance"
-    }
-]
-
-def mock_retrieve_context(route_decision, user_query, web_search_allowed):
-    """Mock retrieval that doesn't need real DB."""
-    result = RetrievalResult()
+@pytest.mark.asyncio
+@patch('components.retrieval.embed_single')
+@patch('components.retrieval.search_vectors')
+async def test_retrieve_context_rag(mock_search_vectors, mock_embed_single):
+    mock_embed_single.return_value = [0.1] * 384
+    mock_search_vectors.return_value = [{"text": "RAG context"}]
     
-    if route_decision.decision == "RAG":
-        result.contexts = MOCK_PINECONE_RESULTS[:2]
-        result.sources = ["company_policy.pdf", "company_policy.pdf"]
-    elif route_decision.decision == "WEB" and web_search_allowed:
-        result.contexts = MOCK_WEB_RESULTS[:1]
-        result.sources = ["Yahoo Finance"]
+    context = await retrieve_context("test query", "RAG", "session123")
     
-    return result
+    assert context == ["RAG context"]
+    mock_embed_single.assert_called_once_with("test query")
+    mock_search_vectors.assert_called_once_with(
+        query_vector=[0.1] * 384,
+        top_k=5,
+        session_id="session123"
+    )
 
-def run_test(test_name: str, query: str, web_allowed: bool, expected_route: str):
-    """Run test with mock data."""
-    print(f"📝 Test: {test_name}")
-    print(f"   Query: '{query}'")
-    print(f"   Web Allowed: {web_allowed}")
+@pytest.mark.asyncio
+@patch('components.retrieval.search_web')
+async def test_retrieve_context_web(mock_search_web):
+    mock_search_web.return_value = [{"snippet": "WEB context"}]
     
-    # 1. Route (REAL router)
-    decision = route_query(query, web_search_allowed=web_allowed)
-    print(f"   → Route: {decision.decision} ({decision.reasoning[:50]}...)")
+    context = await retrieve_context("test query", "WEB", "session123", web_search_allowed=True)
     
-    # 2. Retrieve (MOCK data)
-    result = mock_retrieve_context(decision, query, web_allowed)
-    context_count = len(result.contexts)
-    
-    print(f"   → Mock Contexts: {context_count}")
-    print(f"   → Expected Route: {expected_route}")
-    print("-" * 60)
-    
-    # Pass criteria
-    route_match = decision.decision == expected_route
-    context_expected = context_count > 0 if expected_route in ["RAG", "WEB"] else context_count == 0
-    
-    status = "✅ PASS" if route_match and context_expected else "❌ FAIL"
-    print(f"   {status}\n")
-    
-    return route_match and context_expected
+    assert context == ["WEB context"]
+    mock_search_web.assert_called_once_with("test query", max_results=5)
 
-# Test Suite (All should PASS now!)
-TESTS = [
-    {"name": "RAG Document Query", "query": "Summarize the uploaded PDF policy", "web_allowed": True, "expected": "RAG"},
-    {"name": "DIRECT Coding", "query": "Write Python function to sort list", "web_allowed": True, "expected": "DIRECT"},
-    {"name": "WEB Current Events", "query": "Tesla stock price today", "web_allowed": True, "expected": "WEB"},
-    {"name": "WEB Blocked Toggle", "query": "Latest news about Apple", "web_allowed": False, "expected": "DIRECT"},
-    {"name": "DIRECT Knowledge", "query": "What is photosynthesis?", "web_allowed": True, "expected": "DIRECT"},
-]
+@pytest.mark.asyncio
+async def test_retrieve_context_direct():
+    context = await retrieve_context("test query", "DIRECT", "session123")
+    assert context == []
 
-# Run tests
-print("🧪 MOCK Retrieval Tests (No DB needed)...\n")
-passed = 0
-for test in TESTS:
-    if run_test(test["name"], test["query"], test["web_allowed"], test["expected"]):
-        passed += 1
-
-print("=" * 60)
-print(f"✅ ALL MOCK TESTS PASSED: {passed}/{len(TESTS)}")
-print("🎉 Router + Retrieval Logic is SOLID!")
+@pytest.mark.asyncio
+@patch('components.retrieval.search_web')
+async def test_retrieve_context_web_disabled(mock_search_web):
+    context = await retrieve_context("test query", "WEB", "session123", web_search_allowed=False)
+    assert context == []
+    mock_search_web.assert_not_called()

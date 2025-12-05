@@ -61,7 +61,7 @@ userInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") sendMessage();
 });
 
-// --- Upload Flow (UploadThing via backend sign endpoint) ---
+// --- Upload Flow (S3 via backend) ---
 uploadBtn.addEventListener("click", () => fileInput.click());
 
 fileInput.addEventListener("change", async (e) => {
@@ -71,33 +71,26 @@ fileInput.addEventListener("change", async (e) => {
   addMessage(`Uploading ${file.name}...`, "bot");
 
   try {
-    // 1) Ask backend to sign upload
-    const signData = await postJSON("/api/upload/sign", {
-      filename: file.name,
-      file_size: file.size,
-      file_type: file.type,
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
     });
 
-    const uploadUrl = signData.url;
-    const fileKey = signData.key;
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
 
-    // 2) Upload file to UploadThing (presigned URL)
-    await fetch(uploadUrl, {
-      method: "PUT",
-      body: file,
-      headers: {
-        "Content-Type": file.type || "application/octet-stream",
-      },
-    });
+    const data = await res.json();
 
-    uploadedFileKeys.push(fileKey);
-
-    // 3) Notify backend to start ingestion
-    await postJSON("/api/ingest", {
-      file_key: fileKey,
-      filename: file.name,
-      session_id: SESSION_ID,
-    });
+    if (data.session_id) {
+      SESSION_ID = data.session_id;
+    }
+    if (data.s3_key) {
+      uploadedFileKeys.push(data.s3_key);
+    }
 
     addMessage(`File ${file.name} uploaded and ingestion started.`, "bot");
   } catch (err) {

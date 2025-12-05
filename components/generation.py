@@ -1,68 +1,93 @@
+"""
+Generation module: Final answer creation based on router decision.
+Uses Gemini with context-appropriate prompts.
+"""
+from typing import Literal
+from google.generativeai import GenerativeModel
 import os
-import google.generativeai as genai
 from dotenv import load_dotenv
-from components.router import RouteDecision
-from components.retrieval import RetrievalResult
+from components.retrieval import format_context
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Load prompts from .env
-RAG_PROMPT_TEMPLATE = os.getenv("RAG_PROMPT", "")
-WEB_PROMPT_TEMPLATE = os.getenv("WEB_PROMPT", "")
-DIRECT_PROMPT_TEMPLATE = os.getenv("DIRECT_PROMPT", "")
+# Gemini model for generation (free tier)
+gemini_model = GenerativeModel(
+    model_name="gemini-2.5-flash",
+    generation_config={
+        "temperature": 0.3,  # Balanced creativity
+        "max_output_tokens": 2048,
+        "top_p": 0.9,
+    }
+)
 
-def _call_gemini(prompt: str) -> str:
-    """Private helper to call the Gemini API and return the text."""
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        print(f"[Generation Error] Gemini API call failed: {e}")
-        return "Sorry, I encountered an error while generating the response."
-
-def _generate_rag_answer(query: str, context: str) -> str:
-    """Generates an answer based on RAG context."""
-    prompt = RAG_PROMPT_TEMPLATE.format(context=context, query=query)
-    return _call_gemini(prompt)
-
-def _generate_web_answer(query: str, context: str) -> str:
-    """Generates an answer based on web context."""
-    prompt = WEB_PROMPT_TEMPLATE.format(context=context, query=query)
-    return _call_gemini(prompt)
-
-def _generate_direct_answer(query: str) -> str:
-    """Generates a direct answer from the model's knowledge."""
-    prompt = DIRECT_PROMPT_TEMPLATE.format(query=query)
-    return _call_gemini(prompt)
-
-def generate_final_response(route_decision: RouteDecision, query: str, retrieval_result: RetrievalResult) -> str:
+async def generate_final_response(
+    query: str, 
+    context: list[str], 
+    decision: Literal["RAG", "WEB", "DIRECT"]
+) -> str:
     """
-    Main orchestrator function for generation.
-    It calls the appropriate specialized function based on the route.
-    """
-    decision = route_decision.decision
+    Generate final answer based on routing decision.
     
-    if decision == "DIRECT":
-        print("[Generator] Calling DIRECT answer function.")
-        return _generate_direct_answer(query)
-        
-    # For RAG or WEB, we need context.
-    if not retrieval_result.contexts:
-        print("[Generator] Route was RAG/WEB but no context found. Falling back to DIRECT.")
-        return _generate_direct_answer(query)
-        
-    # Combine all context chunks into a single string
-    combined_context = "\n\n---\n\n".join([item['text'] for item in retrieval_result.contexts])
-
+    Args:
+        query: Original user question
+        context: Retrieved documents/web snippets
+        decision: RAG, WEB, or DIRECT
+    
+    Returns:
+        Final answer string
+    """
+    formatted_context = format_context(context)
+    
     if decision == "RAG":
-        print("[Generator] Calling RAG answer function.")
-        return _generate_rag_answer(query, combined_context)
-    
+        response = await _generate_rag_response(query, formatted_context)
     elif decision == "WEB":
-        print("[Generator] Calling WEB answer function.")
-        return _generate_web_answer(query, combined_context)
-        
-    # Fallback case
-    return _generate_direct_answer(query)
+        response = await _generate_web_response(query, formatted_context)
+    else:  # DIRECT
+        response = await _generate_direct_response(query)
+    
+    print(f"[Generation] {decision}: Generated {len(response)} chars")
+    return response
+
+async def _generate_rag_response(query: str, context: str) -> str:
+    """RAG-specific prompt: Grounded in user documents."""
+    prompt = f"""\
+            You are a helpful assistant answering questions about PRIVATE DOCUMENTS.
+
+            CONTEXT FROM USER DOCUMENTS:
+            {context}
+
+            USER QUESTION: {query}
+
+            Answer ONLY based on the document context above. If the answer isn't in the context, say "I don't have that information in the uploaded documents."
+            Format naturally, cite section/chunk numbers when possible."""
+    
+    response = await gemini_model.generate_content_async(prompt)
+    return response.text.strip()
+
+async def _generate_web_response(query: str, context: str) -> str:
+    """WEB-specific prompt: Current info from search results."""
+    prompt = f"""\
+        You are a helpful assistant using WEB SEARCH RESULTS.
+
+        WEB SEARCH RESULTS:
+        {context}
+
+        USER QUESTION: {query}
+
+        Answer using ONLY the web results above. Summarize key facts. If results don't answer the question, say "Web results don't contain this information."
+        Be concise and factual."""
+    
+    response = await gemini_model.generate_content_async(prompt)
+    return response.text.strip()
+
+async def _generate_direct_response(query: str) -> str:
+    """DIRECT: Pure chat, no context needed."""
+    prompt = f"""\
+        You are a helpful AI assistant.
+
+        USER: {query}
+
+        Answer naturally and helpfully."""
+    
+    response = await gemini_model.generate_content_async(prompt)
+    return response.text.strip()
