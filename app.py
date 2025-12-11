@@ -63,7 +63,7 @@ class UploadResponse(BaseModel):
 
 
 # ========= HELPERS FOR COMBINED ROUTING =========
-RAG_THRESHOLD = 0.6 # cosine similarity threshold for "relevant doc"
+RAG_THRESHOLD = 0.4 # cosine similarity threshold for "relevant doc"
 
 
 def get_query_embedding(text: str) -> list[float]:
