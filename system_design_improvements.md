@@ -66,3 +66,25 @@ Based on a review of the current codebase, here are the key changes we can make 
 **Issue**: While the API is mostly stateless, relying on `uuid` for sessions, horizontal scaling requires ensuring that any state (like caches, rate limits, or message queues) is shared across all instances. Local memory or files won't suffice.
 **Solution**:
 - Ensure the application runs perfectly behind a load balancer. Use Redis or Memcached for any shared state, caching, or rate-limiting data to allow spinning up multiple instances of the FastAPI server easily.
+
+## 13. Internal Agentic Architecture & Orchestration
+**Issue**: The current router logic relies on a single monolithic decision tree, which is difficult to scale for complex, multi-step tasks.
+**Solution**:
+- Implement a **Multi-Agent Orchestrator** inspired by state-of-the-art frameworks like OpenClaw and the leaked Claude Code architecture.
+- **Supervisor Agent:** A primary orchestrator analyzes the incoming request and delegating tasks to highly specialized, isolated Sub-Agents (e.g., Web Search Agent, VectorDB Retrieval Agent, Context Synthesis Agent).
+- **Asynchronous Execution:** These sub-agents will run asynchronously (using `asyncio.gather` or a framework like LangGraph) to prevent blocking the main process, similar to the "swarms" or "daemons" concept observed in Claude Code's architecture.
+- **Frontend API Key Provisioning:** To ensure this backend remains flexible for a non-production project, we will remove hardcoded API keys from `.env` and configure the backend to accept LLM API keys directly from frontend requests via custom headers.
+
+## 14. Advanced Memory Management
+**Issue**: Pinecone handles semantic search well, but it lacks structured, persistent tracking of user preferences, project conventions, and relational data.
+**Solution**:
+- Adopt a hierarchical memory system modeled after **Gemini CLI's Context Management** and the **Claude Code Three-Layer Memory Architecture**.
+- **Hierarchical Markdown Memory:** Use persistent Markdown files (e.g., `GEMINI.md` or `memory.md`) to store deterministic instructions, user preferences, and project guidelines.
+- **Knowledge Graph Integration:** Augment the VectorDB with a Knowledge Graph (e.g., Neo4j or NetworkX). This hybrid approach maps relationships between extracted entities and chunks (e.g., "User -> uploaded -> Document_A -> mentions -> Concept_B"), providing deep, structured memory alongside semantic similarity.
+- **Context Compaction & Tool Routing:** Build strict infrastructure around the AI (as seen in Claude Code, where 98% of the codebase handles deterministic state/permissions) to manage context window limits and safely route tools.
+
+## 15. Rich Frontend Output Formatting
+**Issue**: The backend currently returns plain text answers, limiting frontend interactivity.
+**Solution**:
+- Configure the Context Synthesis Agent to output highly structured Markdown (which supports images via `![alt](url)`) and interactive HTML/JSON snippets.
+- This allows the frontend to dynamically render complex components, text, and interactive applications based on the LLM's response.
