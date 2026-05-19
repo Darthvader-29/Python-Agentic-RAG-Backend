@@ -49,3 +49,20 @@ Based on a review of the current codebase, here are the key changes we can make 
 **Issue**: Current logging uses `print()` statements.
 **Solution**:
 - Implement structured logging (e.g., JSON logs) using the `logging` module or a library like `structlog`. Integrate with a centralized logging system and add APM (Application Performance Monitoring) to track endpoint latency and external API call durations.
+
+## 10. Primary Operational Database
+**Issue**: The application currently uses Pinecone (a vector database) as its primary source of truth for session management, file tracking, and metadata queries. For instance, `list_s3_keys_for_session` relies on a `top_k=1000` query with a dummy vector to find files associated with a session, and `has_session_documents` performs a dummy vector query to check for session existence. This is not what vector databases are optimized for; it leads to inefficient, paginated queries that won't scale if a session has thousands of chunks, and limits the ability to track session state, user authentication, or complex file metadata.
+**Solution**:
+- Introduce a relational database (e.g., PostgreSQL) or a NoSQL database (e.g., MongoDB, DynamoDB) to act as the primary operational store.
+- Use this database to track sessions, user mappings, file uploads, S3 keys, and processing status.
+- Pinecone should only be used strictly for semantic similarity searches.
+
+## 11. Asynchronous Web Search
+**Issue**: The `search_web` function in `integrations/duckduckgo/client.py` uses a synchronous DuckDuckGo search client (`ddgs.text()`). If the routing decision is `WEB`, this synchronous call will block the FastAPI event loop during retrieval, delaying other concurrent requests.
+**Solution**:
+- Switch to an asynchronous web search client or wrap the DuckDuckGo search call in `asyncio.to_thread()` or an executor.
+
+## 12. Stateless API and Horizontal Scaling Readiness
+**Issue**: While the API is mostly stateless, relying on `uuid` for sessions, horizontal scaling requires ensuring that any state (like caches, rate limits, or message queues) is shared across all instances. Local memory or files won't suffice.
+**Solution**:
+- Ensure the application runs perfectly behind a load balancer. Use Redis or Memcached for any shared state, caching, or rate-limiting data to allow spinning up multiple instances of the FastAPI server easily.
