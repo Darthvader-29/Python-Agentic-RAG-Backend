@@ -1,9 +1,13 @@
+import structlog
 from pinecone import Pinecone, ServerlessSpec
-from config import PINECONE_API_KEY, PINECONE_INDEX_NAME
+
+from config import settings
 
 # Initialize Pinecone
-pc = Pinecone(api_key=PINECONE_API_KEY)
-INDEX_NAME = PINECONE_INDEX_NAME
+pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+INDEX_NAME = settings.PINECONE_INDEX_NAME
+
+logger = structlog.get_logger(__name__)
 
 
 def get_index():
@@ -14,7 +18,7 @@ def get_index():
     existing_indexes = [i.name for i in pc.list_indexes()]
 
     if INDEX_NAME not in existing_indexes:
-        print(f"Creating new Pinecone index: {INDEX_NAME}")
+        logger.info("pinecone_create_index", index_name=INDEX_NAME)
         pc.create_index(
             name=INDEX_NAME,
             dimension=384,  # MiniLM-L6-v2 = 384 dims
@@ -43,7 +47,7 @@ def save_vectors(vectors: list[dict]):
         batch = vectors[i : i + batch_size]
         index.upsert(vectors=batch)
 
-    print(f"Successfully saved {len(vectors)} vectors to Pinecone.")
+    logger.info("pinecone_vectors_saved", count=len(vectors))
 
 
 def search_vectors(query_vector, top_k: int = 5, session_id: str | None = None):
@@ -85,9 +89,9 @@ def delete_vectors_by_session(session_id: str):
                 "session_id": {"$eq": session_id},
             }
         )
-        print(f"Deleted vectors for session: {session_id}")
-    except Exception as e:
-        print(f"Pinecone Delete Error: {e}")
+        logger.info("pinecone_vectors_deleted", session_id=session_id)
+    except Exception:
+        logger.error("pinecone_delete_error", exc_info=True)
 
 
 def list_s3_keys_for_session(session_id: str) -> list[str]:
@@ -110,8 +114,8 @@ def list_s3_keys_for_session(session_id: str) -> list[str]:
             if m.metadata and m.metadata.get("s3_key")
         }
         keys_list = list(keys)
-        print(f"Found {len(keys_list)} S3 keys for session {session_id}")
+        logger.info("s3_keys_listed", count=len(keys_list), session_id=session_id)
         return keys_list
-    except Exception as e:
-        print(f"Error listing S3 keys for session {session_id}: {e}")
+    except Exception:
+        logger.error("s3_keys_list_error", session_id=session_id, exc_info=True)
         return []

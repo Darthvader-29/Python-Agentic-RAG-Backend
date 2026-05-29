@@ -1,28 +1,28 @@
-import os
 import uuid
-from typing import List, Optional
 
-from exceptions import AppException, app_exception_handler
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
+import structlog
+from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
-from components.router import route_query
-from components.retrieval import retrieve_context
 from components.generation import generate_final_response
 from components.preprocessing import process_file_pipeline
+from components.retrieval import retrieve_context
+from components.router import route_query
 from database.db_manager import (
     delete_vectors_by_session,
     list_s3_keys_for_session,
     search_vectors,
 )
-from integrations.s3.client import upload_fileobj_to_s3, delete_s3_objects
+from exceptions import AppException, app_exception_handler
 from integrations.huggingface.client import embed_batch  # for query embedding
+from integrations.s3.client import delete_s3_objects, upload_fileobj_to_s3
+from logging_config import configure_logging
 
-load_dotenv()
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 app = FastAPI(
     title="Dynamic Knowledge RAG Engine",
@@ -46,13 +46,13 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ========= MODELS =========
 class ChatRequest(BaseModel):
     message: str
-    session_id: Optional[str] = None
+    session_id: str | None = None
     web_search_allowed: bool = True
 
 
 class CleanupRequest(BaseModel):
     session_id: str
-    file_keys: Optional[List[str]] = []
+    file_keys: list[str] | None = []
 
 
 class UploadResponse(BaseModel):
@@ -63,7 +63,7 @@ class UploadResponse(BaseModel):
 
 
 # ========= HELPERS FOR COMBINED ROUTING =========
-RAG_THRESHOLD = 0.4 # cosine similarity threshold for "relevant doc"
+RAG_THRESHOLD = 0.4  # cosine similarity threshold for "relevant doc"
 
 
 def get_query_embedding(text: str) -> list[float]:
@@ -90,13 +90,14 @@ def check_docs_relevant(query: str, session_id: str) -> tuple[bool, bool]:
         has_docs = True
         top_score = results[0]["score"]
         docs_relevant = top_score >= RAG_THRESHOLD
-        print(
-            f"[Routing] Pinecone relevance: top_score={top_score:.3f}, "
-            f"docs_relevant={docs_relevant}"
+        logger.info(
+            "pinecone_relevance_check",
+            top_score=round(top_score, 3),
+            docs_relevant=docs_relevant,
         )
         return has_docs, docs_relevant
-    except Exception as e:
-        print(f"[Routing] Doc relevance check failed: {e}")
+    except Exception:
+        logger.error("doc_relevance_check_failed", exc_info=True)
         return False, False
 
 
@@ -147,12 +148,13 @@ async def upload(
     Uses the session_id provided by the frontend so cleanup works.
     """
     try:
-        s3_key = upload_fileobj_to_s3(file.file, file.filename)
+        filename = file.filename or "upload"
+        s3_key = upload_fileobj_to_s3(file.file, filename)
 
         background_tasks.add_task(
             process_file_pipeline,
             s3_key,
-            file.filename,
+            filename,
             session_id,
         )
 
@@ -162,8 +164,8 @@ async def upload(
             session_id=session_id,
             s3_key=s3_key,
         )
-    except Exception:
-        raise AppException(status_code=500, detail="Upload failed unexpectedly.")
+    except Exception as exc:
+        raise AppException(status_code=500, detail="Upload failed unexpectedly.") from exc
 
 
 # ========= CHAT =========
@@ -178,8 +180,11 @@ async def chat(request: ChatRequest):
     """
     try:
         session_id = request.session_id or str(uuid.uuid4())
-        print(
-            f"[Chat] '{request.message[:50]}...' | web={request.web_search_allowed} | session={session_id[:8]}"
+        logger.info(
+            "chat_request",
+            message_preview=request.message[:50],
+            web_search_allowed=request.web_search_allowed,
+            session_id=session_id[:8],
         )
 
         # 1. Base route from Gemini + fallback router
@@ -203,9 +208,12 @@ async def chat(request: ChatRequest):
             web_allowed=request.web_search_allowed,
         )
 
-        print(
-            f"[Routing] base={base_route}, has_docs={has_docs}, "
-            f"docs_relevant={docs_relevant} -> final_route={final_route}"
+        logger.info(
+            "routing_decision",
+            base_route=base_route,
+            has_docs=has_docs,
+            docs_relevant=docs_relevant,
+            final_route=final_route,
         )
 
         # 4. Retrieve according to combined route
@@ -220,7 +228,7 @@ async def chat(request: ChatRequest):
         answer = await generate_final_response(
             request.message,
             context,
-            final_route,
+            final_route,  # type: ignore[arg-type]
         )
 
         return {
@@ -232,8 +240,10 @@ async def chat(request: ChatRequest):
     except AppException:
         raise
     except Exception as e:
-        print(f"[Chat Error] {e}")
-        raise AppException(status_code=500, detail="free tier Limit Reached for API please try again later")
+        logger.error("chat_failed", exc_info=True)
+        raise AppException(
+            status_code=500, detail="free tier Limit Reached for API please try again later"
+        ) from e
 
 
 # ========= CLEANUP =========
@@ -245,7 +255,7 @@ async def cleanup_session(request: CleanupRequest):
     - Delete uploaded files from S3
     """
     try:
-        print(f"[Cleanup] Session {request.session_id}")
+        logger.info("cleanup_request", session_id=request.session_id)
 
         file_keys = request.file_keys or list_s3_keys_for_session(request.session_id)
 
@@ -258,8 +268,8 @@ async def cleanup_session(request: CleanupRequest):
             "deleted_files": len(file_keys or []),
         }
     except Exception as e:
-        print(f"[Cleanup Error] {e}")
-        raise AppException(status_code=500, detail="Cleanup failed unexpectedly.")
+        logger.error("cleanup_failed", exc_info=True)
+        raise AppException(status_code=500, detail="Cleanup failed unexpectedly.") from e
 
 
 # ========= FRONTEND + HEALTH =========

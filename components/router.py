@@ -2,28 +2,31 @@
 Router module: Uses Gemini to classify queries into RAG, WEB, or DIRECT.
 Considers user web_search_allowed toggle.
 """
+
 from typing import Literal
+
 import google.generativeai as genai
+import structlog
 from google.api_core.exceptions import GoogleAPIError
-from config import GOOGLE_API_KEY
+
+from config import settings
 from exceptions import AppException
 
-
-genai.configure(api_key=GOOGLE_API_KEY)
+genai.configure(api_key=settings.GOOGLE_API_KEY)
 # Free tier Gemini model
 gemini_model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
     generation_config={
         "temperature": 0.1,  # Low temp for consistent routing
         "max_output_tokens": 20,
-    }
+    },
 )
+
+logger = structlog.get_logger(__name__)
 
 
 async def route_query(
-    query: str,
-    session_id: str,
-    web_search_allowed: bool
+    query: str, session_id: str, web_search_allowed: bool
 ) -> Literal["RAG", "WEB", "DIRECT"]:
     """
     Route query to RAG, WEB, or DIRECT using Gemini.
@@ -41,9 +44,12 @@ async def route_query(
         # Normalize response
         decision = _normalize_decision(decision)
 
-        print(
-            f"[Router] Query: '{query[:50]}...' -> {decision} "
-            f"(docs: {has_documents}, web: {web_search_allowed})"
+        logger.info(
+            "router_decision",
+            query_preview=query[:50],
+            decision=decision,
+            has_documents=has_documents,
+            web_search_allowed=web_search_allowed,
         )
 
         return decision
@@ -55,7 +61,9 @@ async def route_query(
         http_status = getattr(code, "value", 500) if code else 500
 
         if http_status == 403:
-            msg = "The AI service is not authorized. Please check the Gemini API key and permissions."
+            msg = (
+                "The AI service is not authorized. Please check the Gemini API key and permissions."
+            )
         elif http_status == 404:
             msg = "The AI service could not find a required resource. Please try again later."
         elif http_status == 429:
@@ -69,12 +77,18 @@ async def route_query(
         else:
             msg = f"The AI service returned an unexpected error ({status_name}). Please try again."
 
-        print(f"[Router] Gemini API error {http_status}: {status_name} -> {msg}")
+        logger.error(
+            "gemini_api_error",
+            component="router",
+            http_status=http_status,
+            status_name=status_name,
+            message=msg,
+        )
         # Surface to frontend instead of silently defaulting
         raise AppException(status_code=http_status, detail=msg) from e
 
-    except Exception as e:
-        print(f"[Router] Gemini error, defaulting to RAG: {e}")
+    except Exception:
+        logger.error("router_gemini_error", exc_info=True)
         return "RAG" if has_documents else "DIRECT"
 
 
@@ -133,7 +147,7 @@ async def has_session_documents(session_id: str) -> bool:
         response = index.query(
             vector=[0.0] * 384,  # Dummy vector, content doesn't matter
             top_k=1,
-            filter={"session_id": {"$eq": session_id}}
+            filter={"session_id": {"$eq": session_id}},
         )
         return len(response.matches) > 0
 

@@ -1,16 +1,19 @@
-import pytest
 from unittest.mock import patch
+
 import google.generativeai as genai
-from components.preprocessing import DocumentParser
+import pytest
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-@patch('components.preprocessing.DocumentParser.extract_content')
-@patch('google.generativeai.embed_content')
+from components.preprocessing import DocumentParser
+
+
+@patch("components.preprocessing.DocumentParser.extract_content")
+@patch("google.generativeai.embed_content")
 def test_embedding_pipeline(mock_embed_content, mock_extract_content):
     # Arrange
     mock_extract_content.return_value = "This is a test document. " * 100
     mock_embed_content.return_value = {"embedding": [[0.1] * 768]}
-    
+
     EMBEDDING_MODEL = "gemini-embedding-001"
     EMBEDDING_DIM = 768
 
@@ -25,7 +28,7 @@ def test_embedding_pipeline(mock_embed_content, mock_extract_content):
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     chunks = splitter.split_text(text)
-    
+
     batch = chunks[:1]
     res = genai.embed_content(
         model=EMBEDDING_MODEL,

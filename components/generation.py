@@ -2,16 +2,19 @@
 Generation module: Final answer creation based on router decision.
 Uses Gemini with context-appropriate prompts.
 """
+
 from typing import Literal
-from google.generativeai import GenerativeModel
+
+import google.generativeai as genai
+import structlog
 from google.api_core.exceptions import GoogleAPIError
-from exceptions import AppException
-import os
-from dotenv import load_dotenv
+from google.generativeai import GenerativeModel
+
 from components.retrieval import format_context
+from config import settings
+from exceptions import AppException
 
-
-load_dotenv()
+genai.configure(api_key=settings.GOOGLE_API_KEY)
 
 # Gemini model for generation (free tier)
 gemini_model = GenerativeModel(
@@ -20,14 +23,14 @@ gemini_model = GenerativeModel(
         "temperature": 0.3,  # Balanced creativity
         "max_output_tokens": 65535,
         "top_p": 0.9,
-    }
+    },
 )
+
+logger = structlog.get_logger(__name__)
 
 
 async def generate_final_response(
-    query: str,
-    context: list[str],
-    decision: Literal["RAG", "WEB", "DIRECT"]
+    query: str, context: list[str], decision: Literal["RAG", "WEB", "DIRECT"]
 ) -> str:
     """
     Generate final answer based on routing decision.
@@ -42,7 +45,7 @@ async def generate_final_response(
         else:  # DIRECT
             response = await _generate_direct_response(query)
 
-        print(f"[Generation] {decision}: Generated {len(response)} chars")
+        logger.info("generation_complete", decision=decision, response_chars=len(response))
         return response
 
     except GoogleAPIError as e:
@@ -52,7 +55,9 @@ async def generate_final_response(
         http_status = getattr(code, "value", 500) if code else 500
 
         if http_status == 403:
-            msg = "The AI service is not authorized. Please check the Gemini API key and permissions."
+            msg = (
+                "The AI service is not authorized. Please check the Gemini API key and permissions."
+            )
         elif http_status == 404:
             msg = "The AI service could not find a required resource. Please try again later."
         elif http_status == 429:
@@ -66,12 +71,20 @@ async def generate_final_response(
         else:
             msg = f"The AI service returned an unexpected error ({status_name}). Please try again."
 
-        print(f"[Generation] Gemini API error {http_status}: {status_name} -> {msg}")
+        logger.error(
+            "gemini_api_error",
+            component="generation",
+            http_status=http_status,
+            status_name=status_name,
+            message=msg,
+        )
         raise AppException(status_code=http_status, detail=msg) from e
 
     except Exception as e:
-        print(f"[Generation] Unexpected error: {e}")
-        raise AppException(status_code=500, detail="free tier Limit Reached for API please try again later.") from e
+        logger.error("generation_unexpected_error", exc_info=True)
+        raise AppException(
+            status_code=500, detail="free tier Limit Reached for API please try again later."
+        ) from e
 
 
 async def _generate_rag_response(query: str, context: str) -> str:
