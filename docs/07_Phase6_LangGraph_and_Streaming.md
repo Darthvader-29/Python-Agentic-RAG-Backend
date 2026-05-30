@@ -1,6 +1,8 @@
 # Phase 6 — LangGraph Multi-Agent Orchestrator + SSE Streaming + Rich Output
 
 > **Implementer:** this is the detailed plan for **Phase 6**. See the top-level [00_Master_Upgrade_Roadmap.md](./00_Master_Upgrade_Roadmap.md) §4 (Phase 6) for context. This phase follows [06_Phase5_Redis_Scaling.md](./06_Phase5_Redis_Scaling.md) and must not begin until the Phase 5 CI gate is green. This is the last numbered phase doc (`01`–`07`); anything beyond it lands in a future Phase 7.
+>
+> **Authoritative design:** the agentic-architecture decisions in this doc are refined and superseded by [`09_Phase6_Agentic_Architecture.md`](./09_Phase6_Agentic_Architecture.md) (decided 2026-05-30) — note its two corrections: the vector store is **Pinecone** (not "Chroma") and the provider protocol is **`llm.base.LLMProvider`** (not `providers.base.Provider`).
 
 ## 1. Objective & scope
 
@@ -33,20 +35,20 @@ These are out of scope here; do not pull them forward (roadmap §8).
 
 ## 3. Current-state snapshot (verified after Phases 1–5)
 
-- **DI is complete.** Settings, the Chroma collection, the DB session, the Redis cache, and the **per-request LLM `Provider`** are all injected via `Depends` and overridable in tests.
+- **DI is complete.** Settings, the Pinecone collection, the DB session, the Redis cache, and the **per-request LLM `Provider`** are all injected via `Depends` and overridable in tests.
 - **Postgres** stores chat history and document metadata (Phase 2); **JWT auth + per-user isolation** are enforced (Phase 3).
 - The LLM lives behind a **`Provider` protocol selected per-request** (Phase 4); Gemini is one adapter. Generation/relevance no longer touch Gemini globals — they call the injected provider.
 - **Redis caching, Celery ingestion, presigned uploads, rate-limiting** are live (Phase 5). Uploads return `202`; ingestion runs in workers.
 - **The chat flow is still linear.** `POST /api/chat` runs `decide_combined_route → (web | retrieve) → generate` sequentially and returns **one non-streaming JSON blob**:
   - `app.py` `chat()` calls `decide_combined_route(...)`, branches on `route["destination"]`, then `generate_web_answer` or `retrieve_context` + `generate_answer`, then returns `{"answer", "route"}`.
   - `components/router.py::decide_combined_route` makes a single JSON-mode LLM call returning `{"destination", "relevant"}`.
-  - `components/retrieval.py::retrieve_context` embeds the query, queries Chroma, concatenates docs.
+  - `components/retrieval.py::retrieve_context` embeds the query, queries Pinecone, concatenates docs.
   - `components/generation.py::generate_answer` / `generate_web_answer` produce a grounded / open answer.
 - There is **no `agents/` package**, **no graph**, and **no streaming** anywhere yet.
 
 ## 4. Risks & gotchas (with resolutions)
 
-- **Provider must travel in state, not a global.** Each request carries a different per-user provider (Phase 4). If a node closes over a module global, multi-tenant requests cross-contaminate and tests can't override it. **Resolution:** put the provider (and the Chroma collection / cache handle) into the initial `GraphState`; nodes read `state["provider"]`. The compiled graph is stateless and shared on `app.state`; per-request data lives only in the invocation's state.
+- **Provider must travel in state, not a global.** Each request carries a different per-user provider (Phase 4). If a node closes over a module global, multi-tenant requests cross-contaminate and tests can't override it. **Resolution:** put the provider (and the Pinecone collection / cache handle) into the initial `GraphState`; nodes read `state["provider"]`. The compiled graph is stateless and shared on `app.state`; per-request data lives only in the invocation's state.
 - **SSE × auth × rate-limit interplay.** A `StreamingResponse` still needs the JWT validated and the rate-limit consumed **before** the stream opens — once headers are flushed you can't return a clean `401`/`429`. **Resolution:** keep auth + rate-limit as ordinary `Depends` on the endpoint; they run and can raise before the generator is returned. Only graph execution happens inside the stream.
 - **Backpressure / cancellation on disconnect.** If the client drops mid-stream, the graph keeps running and burns provider tokens. **Resolution:** check `await request.is_disconnected()` between yields and break; wrap the graph stream in a `try/finally` that cancels the task and closes provider/clients.
 - **Behavior parity with the linear flow.** A subtle change in routing or grounding will silently regress answers. **Resolution:** golden-path parity test — same query, mocked provider returns fixed outputs, assert the final answer equals the old linear result **before** enabling parallel retrieval edges.
@@ -59,7 +61,7 @@ These are out of scope here; do not pull them forward (roadmap §8).
 
 ### Task 1 — Typed graph state (`agents/state.py`)
 **Test first:** `tests/agents/test_state.py` — a well-formed `GraphState` dict type-checks; required keys present; the provider slot accepts a fake provider.
-**Implement:** `agents/state.py` with a `GraphState(TypedDict)` carrying query, session/user ids, the injected `provider`, the Chroma `collection`, `route`, `web_result`, `vector_result`, `context`, `answer`, and `events`. See Appendix B.
+**Implement:** `agents/state.py` with a `GraphState(TypedDict)` carrying query, session/user ids, the injected `provider`, the Pinecone `collection`, `route`, `web_result`, `vector_result`, `context`, `answer`, and `events`. See Appendix B.
 **Acceptance:** state imports, type-checks under mypy, and carries the provider as a field (no global).
 
 ### Task 2 — Node functions (web-search, vector, synthesis)
@@ -150,7 +152,7 @@ Each branch writes a **disjoint** state key (`web_result` vs `vector_result`) so
 # agents/state.py
 from typing import Any, TypedDict
 from typing_extensions import NotRequired
-from providers.base import Provider   # Phase 4 protocol
+from llm.base import LLMProvider   # Phase 4 protocol
 
 
 class RouteDecision(TypedDict):
@@ -163,8 +165,8 @@ class GraphState(TypedDict):
     query: str
     session_id: str
     user_id: str
-    provider: Provider                 # per-user, injected — NOT a global
-    collection: Any                    # Chroma collection handle
+    provider: LLMProvider                 # per-user, injected — NOT a global
+    collection: Any                    # Pinecone collection handle
 
     # --- produced by nodes ---
     route: NotRequired[RouteDecision]  # supervisor
@@ -180,7 +182,7 @@ class GraphState(TypedDict):
 | `query` | request | The user question |
 | `session_id` / `user_id` | request | Persistence + per-user isolation (Phase 2/3) |
 | `provider` | request (injected) | Per-user LLM `Provider` (Phase 4); every node reads this |
-| `collection` | request (injected) | Chroma handle for the vector node |
+| `collection` | request (injected) | Pinecone handle for the vector node |
 | `route` | supervisor node | `{destination, relevant}` — old `decide_combined_route` contract |
 | `web_result` | web node | Open-knowledge answer (disjoint key for safe fan-out) |
 | `vector_result` | vector node | Retrieved doc text (disjoint key for safe fan-out) |
@@ -223,7 +225,7 @@ async def chat(
     req: ChatRequest,
     request: Request,
     provider=Depends(get_provider),          # per-user (Phase 4)
-    collection=Depends(get_chroma_collection),
+    collection=Depends(get_pinecone_index),
     graph=Depends(get_graph),                 # compiled once in lifespan
     user=Depends(get_current_user),           # auth (Phase 3) — runs BEFORE stream
     _rl=Depends(rate_limit),                   # rate-limit (Phase 5) — runs BEFORE stream

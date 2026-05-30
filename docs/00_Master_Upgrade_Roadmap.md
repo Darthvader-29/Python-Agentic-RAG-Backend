@@ -147,6 +147,8 @@ orchestrator and stream results.
 - **Exit:** graph orchestrates parallel retrieval; SSE streams to the client; each node uses the
   per-user provider.
 
+> **Detailed agentic design:** see [`09_Phase6_Agentic_Architecture.md`](./09_Phase6_Agentic_Architecture.md) — the authoritative decision record refining Phase 6 (LangGraph nodes, freemium BYOK→free-tier provider ladder, Markdown + component-JSON output).
+
 ### Phase 7 — 3-Layer Memory + Observability/Tracing *(most deferrable, last)*
 **Objective:** richer memory and end-to-end tracing.
 - 3-layer memory: per-session markdown memory + knowledge graph (`networkx` MVP, Neo4j later) +
