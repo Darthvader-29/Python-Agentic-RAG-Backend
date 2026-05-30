@@ -49,16 +49,16 @@ pipeline {
       steps {
         sh '''
           export PATH="$HOME/.local/bin:$PATH"
-          uv run mypy app.py config.py exceptions.py logging_config.py components database integrations
+          uv run mypy app.py config.py dependencies.py exceptions.py logging_config.py components database integrations
         '''
       }
     }
     stage('Test') {
       steps {
-        // Coverage baseline: 36 (Phase 0 measured 2026-05-29; ratchet upward only)
+        // Coverage baseline: 54 (Phase 1 measured 2026-05-30; ratchet upward only)
         sh '''
           export PATH="$HOME/.local/bin:$PATH"
-          uv run pytest --cov --cov-report=xml --junitxml=junit.xml --cov-fail-under=36
+          uv run pytest --cov --cov-report=xml --junitxml=junit.xml --cov-fail-under=54
         '''
       }
     }
