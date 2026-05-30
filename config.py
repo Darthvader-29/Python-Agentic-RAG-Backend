@@ -4,6 +4,8 @@ Reads env (and a local .env), fails fast if a required secret is missing. Module
 singleton; Phase 1 moves this behind dependency injection.
 """
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +26,8 @@ class Settings(BaseSettings):
     UPLOADTHING_API_KEY: str | None = None
     PINECONE_INDEX_NAME: str = "rag-knowledge-base"
     LOG_JSON: bool = Field(default=False)
+    ENVIRONMENT: Literal["development", "production"] = "development"
+    S3_ENDPOINT_URL: str | None = None  # set for MinIO/dev; None → real AWS S3
 
 
 settings = Settings()  # raises ValidationError on missing required vars

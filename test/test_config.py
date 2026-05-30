@@ -14,7 +14,13 @@ REQUIRED = {
 
 
 def _fresh(monkeypatch, env):
-    for k in list(REQUIRED) + ["UPLOADTHING_API_KEY", "PINECONE_INDEX_NAME", "LOG_JSON"]:
+    for k in list(REQUIRED) + [
+        "UPLOADTHING_API_KEY",
+        "PINECONE_INDEX_NAME",
+        "LOG_JSON",
+        "ENVIRONMENT",
+        "S3_ENDPOINT_URL",
+    ]:
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -44,3 +50,13 @@ def test_missing_required_raises(monkeypatch):
     del bad["GOOGLE_API_KEY"]
     with pytest.raises(Exception):
         _fresh(monkeypatch, bad)
+
+
+def test_environment_default(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.ENVIRONMENT == "development"
+
+
+def test_s3_endpoint_optional(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.S3_ENDPOINT_URL is None

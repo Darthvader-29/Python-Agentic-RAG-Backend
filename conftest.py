@@ -18,6 +18,8 @@ _DUMMY = {
     "AWS_SECRET_ACCESS_KEY": "test-secret",
     "PINECONE_INDEX_NAME": "rag-knowledge-base",
     "LOG_JSON": "false",
+    "ENVIRONMENT": "development",
+    # S3_ENDPOINT_URL intentionally absent — tests exercise the None default
 }
 for _k, _v in _DUMMY.items():
     os.environ.setdefault(_k, _v)  # a real shell/.env value still wins
