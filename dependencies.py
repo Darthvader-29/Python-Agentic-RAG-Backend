@@ -1,0 +1,28 @@
+"""FastAPI dependency provider functions.
+
+Each function reads a client from app.state (set during lifespan startup) and
+returns it to any endpoint that declares it via Depends().
+"""
+
+from fastapi import Request
+
+from database.db_manager import PineconeClient
+from integrations.duckduckgo.client import DuckDuckGoClient
+from integrations.huggingface.client import HuggingFaceClient
+from integrations.s3.client import S3Client
+
+
+def get_pinecone_client(request: Request) -> PineconeClient:
+    return request.app.state.pinecone
+
+
+def get_s3_client(request: Request) -> S3Client:
+    return request.app.state.s3
+
+
+def get_embedding_client(request: Request) -> HuggingFaceClient:
+    return request.app.state.embedder
+
+
+def get_web_search_client(request: Request) -> DuckDuckGoClient:
+    return request.app.state.web

@@ -1,12 +1,20 @@
+"""Master ingestion pipeline: S3 download → parse → chunk → embed → Pinecone upsert.
+
+All external calls go through injected client instances; no module-level singletons.
+"""
+
 import os
+from typing import TYPE_CHECKING
 
 import structlog
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from database.db_manager import save_vectors
 from database.doc_parser import DocumentParser
-from integrations.huggingface.client import embed_batch  # NEW
-from integrations.s3.client import download_s3_to_temp
+
+if TYPE_CHECKING:
+    from database.db_manager import PineconeClient
+    from integrations.huggingface.client import HuggingFaceClient
+    from integrations.s3.client import S3Client
 
 # IMPORTANT: Must match Pinecone index dimension (MiniLM output is 384)
 EMBEDDING_DIM = 384
@@ -14,11 +22,17 @@ EMBEDDING_DIM = 384
 logger = structlog.get_logger(__name__)
 
 
-async def process_file_pipeline(file_key: str, filename: str, session_id: str):
+async def process_file_pipeline(
+    file_key: str,
+    filename: str,
+    session_id: str,
+    s3: "S3Client",
+    embedder: "HuggingFaceClient",
+    pinecone: "PineconeClient",
+) -> None:
     """
-    The Master Ingestion Function.
     1. Download from S3
-    2. Extract Text
+    2. Extract text
     3. Chunk
     4. Embed with HuggingFace
     5. Save to Pinecone
@@ -27,11 +41,9 @@ async def process_file_pipeline(file_key: str, filename: str, session_id: str):
     try:
         logger.info("ingestion_start", filename=filename, s3_key=file_key)
 
-        # 1. Download from S3
-        temp_path = download_s3_to_temp(file_key)
+        temp_path = await s3.download_to_temp(file_key)
         logger.info("ingestion_downloaded", temp_path=temp_path)
 
-        # 2. Extract
         raw_text = DocumentParser.extract_content(temp_path, filename)
         logger.info("ingestion_extracted", chars=len(raw_text))
 
@@ -39,7 +51,6 @@ async def process_file_pipeline(file_key: str, filename: str, session_id: str):
             logger.info("ingestion_empty", reason="no text extracted from document")
             return
 
-        # 3. Chunking (Semantic)
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", ". ", " ", ""]
         )
@@ -50,9 +61,8 @@ async def process_file_pipeline(file_key: str, filename: str, session_id: str):
             logger.info("ingestion_empty", reason="no valid chunks created")
             return
 
-        # 4. Embeddings with HuggingFace (single call - client handles batching)
         logger.info("ingestion_embedding_start")
-        embeddings = embed_batch(chunks, batch_size=32)
+        embeddings = await embedder.embed_batch(chunks, batch_size=32)
         logger.debug(
             "ingestion_embeddings",
             count=len(embeddings),
@@ -67,24 +77,22 @@ async def process_file_pipeline(file_key: str, filename: str, session_id: str):
             )
             raise ValueError("Embedding mismatch")
 
-        # 5. Save to Pinecone - CORRECT FORMAT
-        vectors = []
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=False)):
-            vectors.append(
-                {
-                    "id": f"{session_id}_{filename.replace(' ', '_')}_{i:04d}",
-                    "values": embedding,  # List[float] - Pinecone expects this
-                    "metadata": {
-                        "text": chunk,  # Store full chunk text for retrieval
-                        "filename": filename,
-                        "session_id": session_id,
-                        "chunk_index": i,
-                        "s3_key": file_key,
-                    },
-                }
-            )
+        vectors = [
+            {
+                "id": f"{session_id}_{filename.replace(' ', '_')}_{i:04d}",
+                "values": embedding,
+                "metadata": {
+                    "text": chunk,
+                    "filename": filename,
+                    "session_id": session_id,
+                    "chunk_index": i,
+                    "s3_key": file_key,
+                },
+            }
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=False))
+        ]
 
-        save_vectors(vectors)  # Updated signature: takes list of dicts
+        await pinecone.save_vectors(vectors)
         logger.info("ingestion_complete", vectors_saved=len(vectors))
 
     except Exception as e:

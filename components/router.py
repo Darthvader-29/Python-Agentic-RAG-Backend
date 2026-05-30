@@ -1,9 +1,10 @@
-"""
-Router module: Uses Gemini to classify queries into RAG, WEB, or DIRECT.
-Considers user web_search_allowed toggle.
+"""Router module: Uses Gemini to classify queries into RAG, WEB, or DIRECT.
+
+Gemini client stays module-level global — per-user BYOK keys and provider
+abstraction are deferred to Phase 4. Only the Pinecone session-check is injected.
 """
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import google.generativeai as genai
 import structlog
@@ -12,12 +13,15 @@ from google.api_core.exceptions import GoogleAPIError
 from config import settings
 from exceptions import AppException
 
+if TYPE_CHECKING:
+    from database.db_manager import PineconeClient
+
 genai.configure(api_key=settings.GOOGLE_API_KEY)
-# Free tier Gemini model
+# Free tier Gemini model (global; BYOK + provider abstraction deferred to Phase 4)
 gemini_model = genai.GenerativeModel(
     model_name="gemini-2.5-flash",
     generation_config={
-        "temperature": 0.1,  # Low temp for consistent routing
+        "temperature": 0.1,
         "max_output_tokens": 20,
     },
 )
@@ -26,23 +30,19 @@ logger = structlog.get_logger(__name__)
 
 
 async def route_query(
-    query: str, session_id: str, web_search_allowed: bool
+    query: str,
+    session_id: str,
+    web_search_allowed: bool,
+    pinecone: "PineconeClient",
 ) -> Literal["RAG", "WEB", "DIRECT"]:
-    """
-    Route query to RAG, WEB, or DIRECT using Gemini.
-    """
-    # Check if user has uploaded documents for this session
-    has_documents = await has_session_documents(session_id)
+    """Route query to RAG, WEB, or DIRECT using Gemini."""
+    has_documents = await pinecone.has_session_documents(session_id)
 
-    # Build routing prompt
     prompt = _build_routing_prompt(query, has_documents, web_search_allowed)
 
     try:
         response = await gemini_model.generate_content_async(prompt)
-        decision = response.text.strip().upper()
-
-        # Normalize response
-        decision = _normalize_decision(decision)
+        decision = _normalize_decision(response.text.strip().upper())
 
         logger.info(
             "router_decision",
@@ -55,7 +55,6 @@ async def route_query(
         return decision
 
     except GoogleAPIError as e:
-        # Map Gemini HTTP / gRPC codes to clear frontend messages
         code = getattr(e, "code", None)
         status_name = getattr(code, "name", "") if code else ""
         http_status = getattr(code, "value", 500) if code else 500
@@ -84,7 +83,6 @@ async def route_query(
             status_name=status_name,
             message=msg,
         )
-        # Surface to frontend instead of silently defaulting
         raise AppException(status_code=http_status, detail=msg) from e
 
     except Exception:
@@ -123,7 +121,7 @@ def _build_routing_prompt(query: str, has_documents: bool, web_allowed: bool) ->
 
 
 def _normalize_decision(decision: str) -> Literal["RAG", "WEB", "DIRECT"]:
-    """Handle Gemini variations."""
+    """Handle Gemini response variations."""
     decision = decision.strip().upper()
     if decision.startswith("RAG"):
         return "RAG"
@@ -131,25 +129,3 @@ def _normalize_decision(decision: str) -> Literal["RAG", "WEB", "DIRECT"]:
         return "WEB"
     else:
         return "DIRECT"
-
-
-async def has_session_documents(session_id: str) -> bool:
-    """
-    Quick check: Does this session have vectors in Pinecone?
-    (Could be cached or use Pinecone stats)
-    """
-    from database.db_manager import get_index
-
-    try:
-        index = get_index()
-        # Query for one vector in the session namespace
-        # This is faster than describe_index_stats if the index is large
-        response = index.query(
-            vector=[0.0] * 384,  # Dummy vector, content doesn't matter
-            top_k=1,
-            filter={"session_id": {"$eq": session_id}},
-        )
-        return len(response.matches) > 0
-
-    except Exception:
-        return False
