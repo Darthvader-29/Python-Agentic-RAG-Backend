@@ -1,20 +1,40 @@
-"""Async data-access layer for session and document state.
+"""Async data-access layer for session, document, user, and LLM key state.
 
-Each function accepts an AsyncSession and performs a single focused query.
+Each function/method accepts an AsyncSession and performs a single focused query.
 The caller (endpoint or background task) owns the transaction boundary.
 """
+
+import uuid
 
 from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Document, DocumentStatus, Session
+from database.models import Document, DocumentStatus, Session, User, UserLLMKey
+
+# ── Session ──────────────────────────────────────────────────────────────────
 
 
 async def get_or_create_session(db: AsyncSession, session_id: str) -> None:
     """Idempotent upsert — safe to call multiple times for the same session_id."""
     stmt = pg_insert(Session).values(id=session_id).on_conflict_do_nothing(index_elements=["id"])
     await db.execute(stmt)
+
+
+async def get_session(db: AsyncSession, session_id: str) -> Session | None:
+    """Return the Session row for session_id, or None if it doesn't exist."""
+    return await db.get(Session, session_id)
+
+
+async def create_session(db: AsyncSession, session_id: str, user_id: uuid.UUID) -> Session:
+    """Create a new session owned by user_id."""
+    session = Session(id=session_id, user_id=user_id)
+    db.add(session)
+    await db.flush()
+    return session
+
+
+# ── Document ─────────────────────────────────────────────────────────────────
 
 
 async def create_document(
@@ -50,3 +70,75 @@ async def list_s3_keys_for_session(db: AsyncSession, session_id: str) -> list[st
 async def delete_session(db: AsyncSession, session_id: str) -> None:
     # FK ON DELETE CASCADE removes the session's documents atomically
     await db.execute(delete(Session).where(Session.id == session_id))
+
+
+# ── UserRepository ───────────────────────────────────────────────────────────
+
+
+class UserRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def create(self, *, email: str, username: str, hashed_password: str) -> User:
+        user = User(email=email, username=username, hashed_password=hashed_password)
+        self.db.add(user)
+        await self.db.flush()
+        return user
+
+    async def get(self, user_id: str | uuid.UUID) -> User | None:
+        if isinstance(user_id, str):
+            try:
+                user_id = uuid.UUID(user_id)
+            except ValueError:
+                return None
+        return await self.db.get(User, user_id)
+
+    async def get_by_email(self, email: str) -> User | None:
+        result = await self.db.execute(select(User).where(User.email == email))
+        return result.scalar_one_or_none()
+
+    async def get_by_username(self, username: str) -> User | None:
+        result = await self.db.execute(select(User).where(User.username == username))
+        return result.scalar_one_or_none()
+
+
+# ── LLMKeyRepository ─────────────────────────────────────────────────────────
+
+
+class LLMKeyRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def upsert(self, *, user_id: uuid.UUID, provider: str, ciphertext: str) -> UserLLMKey:
+        """Insert or update (rotate) the ciphertext for the given user+provider."""
+        stmt = (
+            pg_insert(UserLLMKey)
+            .values(user_id=user_id, provider=provider, ciphertext=ciphertext)
+            .on_conflict_do_update(
+                index_elements=["user_id", "provider"],
+                set_={"ciphertext": ciphertext},
+            )
+            .returning(UserLLMKey)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.flush()
+        row = result.scalar_one()
+        return row
+
+    async def rotate(self, *, user_id: uuid.UUID, provider: str, ciphertext: str) -> UserLLMKey:
+        return await self.upsert(user_id=user_id, provider=provider, ciphertext=ciphertext)
+
+    async def delete(self, *, user_id: uuid.UUID, provider: str) -> None:
+        await self.db.execute(
+            delete(UserLLMKey).where(UserLLMKey.user_id == user_id, UserLLMKey.provider == provider)
+        )
+
+    async def list_for_user(self, user_id: uuid.UUID) -> list[UserLLMKey]:
+        result = await self.db.execute(select(UserLLMKey).where(UserLLMKey.user_id == user_id))
+        return list(result.scalars())
+
+    async def get(self, *, user_id: uuid.UUID, provider: str) -> UserLLMKey | None:
+        result = await self.db.execute(
+            select(UserLLMKey).where(UserLLMKey.user_id == user_id, UserLLMKey.provider == provider)
+        )
+        return result.scalar_one_or_none()

@@ -11,6 +11,7 @@ import os
 
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 
 # Load .env so TEST_DATABASE_URL (and other vars) are available via os.environ.
 # This runs before the _DUMMY setdefaults so any real value in .env wins.
@@ -37,6 +38,11 @@ _DUMMY = {
     # Phase 2: dummy satisfies Settings() validation; real DB tests use TEST_DATABASE_URL
     "DATABASE_URL": "postgresql+asyncpg://rag:rag@localhost:5432/rag_test",
     # S3_ENDPOINT_URL intentionally absent — tests exercise the None default
+    # Phase 3: auth + encryption dummies (real-shaped but never used in prod)
+    "JWT_SECRET": "test-jwt-secret-not-for-production",
+    "LLM_KEY_ENCRYPTION_KEY": os.environ.get("LLM_KEY_ENCRYPTION_KEY")
+    or Fernet.generate_key().decode(),
+    "CORS_ALLOWED_ORIGINS": '["http://localhost:3000"]',
 }
 for _k, _v in _DUMMY.items():
     os.environ.setdefault(_k, _v)  # a real shell/.env value still wins

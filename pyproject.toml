@@ -7,7 +7,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "python-multipart",
-    "pydantic",
+    "pydantic[email]",
     "pydantic-settings",
     "python-dotenv",
     "structlog",
@@ -28,6 +28,9 @@ dependencies = [
     "sqlalchemy>=2.0.50",
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
+    "cryptography>=48.0.0",
+    "pyjwt>=2.13.0",
+    "bcrypt>=5.0.0",
 ]
 
 [dependency-groups]
@@ -82,6 +85,11 @@ module = ["app"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
+# bcrypt stubs don't cover all internal types — tech debt
+module = ["bcrypt"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
 # tenacity stubs don't support @retry(**dict) spread (call-overload false positive) — tech debt:
 # revisit when tenacity stubs gain generic overload support or switch to explicit kwargs
 module = [
@@ -95,12 +103,12 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["test"]
-# Coverage baseline: 58 (Phase 2, measured 2026-05-31). Ratchet upward only.
-addopts = "-q --cov-fail-under=58"
+# Coverage baseline: 67 (Phase 3, measured 2026-05-31). Ratchet upward only.
+addopts = "-q --cov-fail-under=67"
 
 [tool.coverage.run]
 branch = true
-source = ["app", "config", "exceptions", "logging_config", "components", "database", "integrations"]
+source = ["app", "config", "exceptions", "logging_config", "components", "database", "integrations", "auth"]
 omit = ["test/*", "integrations/uploadthing/*"]
 
 [tool.coverage.report]

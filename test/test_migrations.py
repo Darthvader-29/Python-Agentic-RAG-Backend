@@ -1,11 +1,12 @@
 """Alembic migration integration test.
 
-Runs against the real NeonDB TestDB (TEST_DATABASE_URL). Verifies that
-`alembic upgrade head` creates the sessions and documents tables, then
-runs `downgrade base` to leave the DB clean for the next test run.
+Runs against the real NeonDB TestDB (TEST_DATABASE_URL). Starts from a clean schema,
+applies all Phase 2 + Phase 3 migrations via Alembic, then verifies the expected tables
+exist.
 
-This test is deliberately a sync function so that alembic's internal
-asyncio.run() does not conflict with the test event loop.
+NOTE: The test drops all tables before running migrations so it is self-contained and
+independent of the session-scoped _engine fixture that other DB tests use. After the
+migrations run, the tables remain at head state for subsequent db_session tests.
 """
 
 import asyncio
@@ -25,19 +26,28 @@ def test_alembic_upgrade_head_creates_schema():
 
     from sqlalchemy.ext.asyncio import create_async_engine
 
+    from database.models import Base
     from database.session import _to_asyncpg_url
 
     url, connect_args = _to_asyncpg_url(raw)
-
-    # Point alembic at the test DB for this run
     cfg = Config("alembic.ini")
-    # Override DATABASE_URL env so migrations/env.py picks up the test DB
     os.environ["DATABASE_URL"] = raw
 
     try:
-        command.downgrade(cfg, "base")
+        # Start from a fully clean state: drop all model tables + alembic_version
+        async def _clean() -> None:
+            engine = create_async_engine(url, connect_args=connect_args, poolclass=NullPool)
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+                await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+            await engine.dispose()
+
+        asyncio.run(_clean())
+
+        # Run all migrations from base → head
         command.upgrade(cfg, "head")
 
+        # Verify all expected tables are present
         async def _check() -> set:
             engine = create_async_engine(url, connect_args=connect_args, poolclass=NullPool)
             async with engine.connect() as conn:
@@ -45,7 +55,8 @@ def test_alembic_upgrade_head_creates_schema():
                     text(
                         "SELECT table_name FROM information_schema.tables "
                         "WHERE table_schema = 'public' "
-                        "AND table_name IN ('sessions', 'documents')"
+                        "AND table_name IN "
+                        "('sessions', 'documents', 'users', 'user_llm_keys')"
                     )
                 )
                 tables = {row[0] for row in result}
@@ -53,13 +64,11 @@ def test_alembic_upgrade_head_creates_schema():
             return tables
 
         tables = asyncio.run(_check())
-        assert {"sessions", "documents"} <= tables, f"Missing tables: {tables}"
+        assert {"sessions", "documents", "users", "user_llm_keys"} <= tables, (
+            f"Missing expected tables after upgrade head: {tables}"
+        )
 
     finally:
-        # Clean up: downgrade back to base so the _engine fixture can start fresh
-        try:
-            command.downgrade(cfg, "base")
-        except Exception:
-            pass
-        # Restore DATABASE_URL to the prod value (conftest dummy wins if no prod .env)
+        # Leave DB at head state — do NOT downgrade. Subsequent db_session tests will
+        # use the tables created by this migration run.
         os.environ.pop("DATABASE_URL", None)

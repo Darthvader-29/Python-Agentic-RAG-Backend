@@ -1,5 +1,6 @@
 """DI-override integration tests: prove every endpoint pulls clients from DI."""
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,7 +8,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import app
+from auth.dependencies import get_current_user
 from database.db_manager import PineconeClient
+from database.models import User
 from dependencies import (
     get_db_session,
     get_db_sessionmaker,
@@ -57,7 +60,17 @@ def fake_db():
 
 
 @pytest.fixture
-def di_client(fake_pinecone, fake_embedder, fake_s3, fake_web, fake_db):
+def fake_user():
+    """A minimal User object for get_current_user override."""
+    u = MagicMock(spec=User)
+    u.id = uuid.uuid4()
+    u.email = "test@example.com"
+    u.username = "testuser"
+    return u
+
+
+@pytest.fixture
+def di_client(fake_pinecone, fake_embedder, fake_s3, fake_web, fake_db, fake_user):
     """TestClient with DI overrides and a patched lifespan to avoid real network calls."""
     fake_sessionmaker = AsyncMock()
 
@@ -70,6 +83,8 @@ def di_client(fake_pinecone, fake_embedder, fake_s3, fake_web, fake_db):
     app.dependency_overrides[get_web_search_client] = lambda: fake_web
     app.dependency_overrides[get_db_session] = _db_session_override
     app.dependency_overrides[get_db_sessionmaker] = lambda: fake_sessionmaker
+    # Phase 3: bypass auth for DI tests
+    app.dependency_overrides[get_current_user] = lambda: fake_user
 
     with patch.object(PineconeClient, "ensure_index", new_callable=AsyncMock):
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -81,12 +96,17 @@ def di_client(fake_pinecone, fake_embedder, fake_s3, fake_web, fake_db):
 # ── cleanup endpoint ──────────────────────────────────────────────────────────
 
 
-def test_cleanup_uses_di_pinecone_s3_and_db(di_client, fake_pinecone, fake_s3):
+def test_cleanup_uses_di_pinecone_s3_and_db(di_client, fake_pinecone, fake_s3, fake_user):
     """cleanup_session resolves pinecone, s3, and db from DI; keys come from Postgres."""
+    fake_session = MagicMock()
+    fake_session.user_id = fake_user.id
+
     with (
+        patch("app.repo.get_session", new_callable=AsyncMock) as mock_get_sess,
         patch("app.repo.list_s3_keys_for_session", new_callable=AsyncMock) as mock_keys,
         patch("app.repo.delete_session", new_callable=AsyncMock),
     ):
+        mock_get_sess.return_value = fake_session
         mock_keys.return_value = ["key1", "key2"]
 
         resp = di_client.post("/api/cleanup", json={"session_id": "test-session"})
@@ -100,12 +120,17 @@ def test_cleanup_uses_di_pinecone_s3_and_db(di_client, fake_pinecone, fake_s3):
     fake_s3.delete_objects.assert_awaited_once_with(["key1", "key2"])
 
 
-def test_cleanup_no_files_skips_s3_delete(di_client, fake_pinecone, fake_s3):
+def test_cleanup_no_files_skips_s3_delete(di_client, fake_pinecone, fake_s3, fake_user):
     """When session has no documents, s3.delete_objects is not called."""
+    fake_session = MagicMock()
+    fake_session.user_id = fake_user.id
+
     with (
+        patch("app.repo.get_session", new_callable=AsyncMock) as mock_get_sess,
         patch("app.repo.list_s3_keys_for_session", new_callable=AsyncMock) as mock_keys,
         patch("app.repo.delete_session", new_callable=AsyncMock),
     ):
+        mock_get_sess.return_value = fake_session
         mock_keys.return_value = []
 
         resp = di_client.post("/api/cleanup", json={"session_id": "empty-session"})
@@ -118,13 +143,18 @@ def test_cleanup_no_files_skips_s3_delete(di_client, fake_pinecone, fake_s3):
 # ── chat endpoint ─────────────────────────────────────────────────────────────
 
 
-def test_chat_uses_di_clients(di_client, fake_pinecone, fake_embedder, fake_web):
+def test_chat_uses_di_clients(di_client, fake_pinecone, fake_embedder, fake_web, fake_user):
     """chat endpoint resolves all clients from DI; route_query reads has_docs from DB."""
+    fake_session = MagicMock()
+    fake_session.user_id = fake_user.id
+
     with (
+        patch("app.repo.get_session", new_callable=AsyncMock) as mock_get_sess,
         patch("components.router.repo.session_has_documents", new_callable=AsyncMock) as mock_hd,
         patch("components.router.gemini_model.generate_content_async") as mock_gemini,
         patch("app.generate_final_response", new_callable=AsyncMock) as mock_gen,
     ):
+        mock_get_sess.return_value = fake_session
         mock_hd.return_value = False
         mock_gemini.return_value = MagicMock(text="DIRECT")
         mock_gen.return_value = "Test answer"

@@ -2,13 +2,16 @@ import uuid
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth.dependencies import get_current_user
+from auth.keys_router import router as keys_router
+from auth.router import router as auth_router
 from components.generation import generate_final_response
 from components.preprocessing import EMBEDDING_DIM, process_file_pipeline
 from components.retrieval import retrieve_context
@@ -16,6 +19,7 @@ from components.router import route_query
 from config import settings
 from database import repository as repo
 from database.db_manager import PineconeClient
+from database.models import User
 from database.session import build_engine, build_sessionmaker
 from dependencies import (
     get_db_session,
@@ -58,15 +62,20 @@ app = FastAPI(
 
 app.add_exception_handler(AppException, app_exception_handler)
 
+# Phase 3: explicit allow-list — "*" + allow_credentials is rejected by browsers
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Phase 3: auth + key management routers
+app.include_router(auth_router)
+app.include_router(keys_router)
 
 
 # ========= MODELS =========
@@ -156,6 +165,7 @@ async def upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session_id: str = Form(...),
+    current_user: User = Depends(get_current_user),
     s3: S3Client = Depends(get_s3_client),
     embedder: HuggingFaceClient = Depends(get_embedding_client),
     pinecone: PineconeClient = Depends(get_pinecone_client),
@@ -164,10 +174,18 @@ async def upload(
 ):
     """Upload file to S3, record session/document in Postgres, start ingestion."""
     try:
+        # Phase 3: ownership check — create session with owner or verify existing ownership
+        existing = await repo.get_session(db, session_id)
+        if existing is None:
+            await repo.create_session(db, session_id, current_user.id)
+        elif existing.user_id is not None and existing.user_id != current_user.id:
+            raise HTTPException(403, "session does not belong to the current user")
+        elif existing.user_id is None:
+            existing.user_id = current_user.id
+
         filename = file.filename or "upload"
         s3_key = await s3.upload_fileobj(file.file, filename)
 
-        await repo.get_or_create_session(db, session_id)
         await repo.create_document(db, session_id=session_id, s3_key=s3_key, filename=filename)
 
         # sessionmaker (not the request session) is safe to pass to background tasks
@@ -188,6 +206,8 @@ async def upload(
             session_id=session_id,
             s3_key=s3_key,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise AppException(status_code=500, detail="Upload failed unexpectedly.") from exc
 
@@ -198,6 +218,7 @@ async def upload(
 @app.post("/api/chat")
 async def chat(
     request: ChatRequest,
+    current_user: User = Depends(get_current_user),
     pinecone: PineconeClient = Depends(get_pinecone_client),
     embedder: HuggingFaceClient = Depends(get_embedding_client),
     web: DuckDuckGoClient = Depends(get_web_search_client),
@@ -212,6 +233,15 @@ async def chat(
             web_search_allowed=request.web_search_allowed,
             session_id=session_id[:8],
         )
+
+        # Phase 3: ownership check — create session with owner or verify existing ownership
+        existing = await repo.get_session(db, session_id)
+        if existing is None:
+            await repo.create_session(db, session_id, current_user.id)
+        elif existing.user_id is not None and existing.user_id != current_user.id:
+            raise HTTPException(403, "session does not belong to the current user")
+        elif existing.user_id is None:
+            existing.user_id = current_user.id
 
         base_route = await route_query(request.message, session_id, request.web_search_allowed, db)
 
@@ -256,7 +286,7 @@ async def chat(
             "context_count": len(context),
             "session_id": session_id,
         }
-    except AppException:
+    except (AppException, HTTPException):
         raise
     except Exception as e:
         logger.error("chat_failed", exc_info=True)
@@ -271,6 +301,7 @@ async def chat(
 @app.post("/api/cleanup")
 async def cleanup_session(
     request: CleanupRequest,
+    current_user: User = Depends(get_current_user),
     s3: S3Client = Depends(get_s3_client),
     pinecone: PineconeClient = Depends(get_pinecone_client),
     db: AsyncSession = Depends(get_db_session),
@@ -278,6 +309,13 @@ async def cleanup_session(
     """Delete Pinecone vectors, S3 objects, and Postgres state for a session."""
     try:
         logger.info("cleanup_request", session_id=request.session_id)
+
+        # Phase 3: ownership check
+        session = await repo.get_session(db, request.session_id)
+        if session is None:
+            raise HTTPException(404, "session not found")
+        if session.user_id is not None and session.user_id != current_user.id:
+            raise HTTPException(403, "session does not belong to the current user")
 
         keys = await repo.list_s3_keys_for_session(db, request.session_id)
         await pinecone.delete_vectors_by_session(request.session_id)
@@ -290,6 +328,8 @@ async def cleanup_session(
             "session_id": request.session_id,
             "deleted_files": len(keys),
         }
+    except (AppException, HTTPException):
+        raise
     except Exception as e:
         logger.error("cleanup_failed", exc_info=True)
         raise AppException(status_code=500, detail="Cleanup failed unexpectedly.") from e
