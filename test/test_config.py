@@ -10,6 +10,7 @@ REQUIRED = {
     "S3_BUCKET_NAME": "b",
     "AWS_ACCESS_KEY_ID": "ak",
     "AWS_SECRET_ACCESS_KEY": "sk",
+    "DATABASE_URL": "postgresql+asyncpg://rag:rag@localhost:5432/rag",
 }
 
 
@@ -60,3 +61,16 @@ def test_environment_default(monkeypatch):
 def test_s3_endpoint_optional(monkeypatch):
     c = _fresh(monkeypatch, REQUIRED)
     assert c.settings.S3_ENDPOINT_URL is None
+
+
+def test_database_url_required(monkeypatch, tmp_path):
+    # Use a temp dir without a .env file so pydantic-settings can't fall back to the real one
+    monkeypatch.chdir(tmp_path)
+    bad = {k: v for k, v in REQUIRED.items() if k != "DATABASE_URL"}
+    with pytest.raises(Exception):
+        _fresh(monkeypatch, bad)
+
+
+def test_database_url_loaded(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.DATABASE_URL == "postgresql+asyncpg://rag:rag@localhost:5432/rag"

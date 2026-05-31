@@ -4,7 +4,10 @@ Each function reads a client from app.state (set during lifespan startup) and
 returns it to any endpoint that declares it via Depends().
 """
 
+from collections.abc import AsyncIterator
+
 from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.db_manager import PineconeClient
 from integrations.duckduckgo.client import DuckDuckGoClient
@@ -26,3 +29,20 @@ def get_embedding_client(request: Request) -> HuggingFaceClient:
 
 def get_web_search_client(request: Request) -> DuckDuckGoClient:
     return request.app.state.web
+
+
+async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
+    """Per-request AsyncSession: commits on success, rolls back on error."""
+    factory = request.app.state.db_sessionmaker
+    async with factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+def get_db_sessionmaker(request: Request):
+    """Return the session factory for background tasks that cannot use Depends."""
+    return request.app.state.db_sessionmaker

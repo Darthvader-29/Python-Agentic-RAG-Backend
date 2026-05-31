@@ -4,16 +4,30 @@ version = "1.0.0"
 description = "Multi-agent RAG backend (FastAPI, Pinecone, S3, Gemini)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "fastapi", "uvicorn", "python-multipart",
-    "pydantic", "pydantic-settings",
-    "python-dotenv", "structlog",
-    "google-generativeai", "pinecone", "boto3", "httpx",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "structlog",
+    "google-generativeai",
+    "pinecone",
+    "boto3",
+    "httpx",
     "requests",
-    "huggingface_hub", "numpy",
-    "langchain-text-splitters", "langgraph", "openai", "tenacity",
+    "huggingface_hub",
+    "numpy",
+    "langchain-text-splitters",
+    "langgraph",
+    "openai",
+    "tenacity",
     "python-docx",
     "pymupdf",
     "duckduckgo-search",
+    "sqlalchemy>=2.0.50",
+    "alembic>=1.18.4",
+    "asyncpg>=0.31.0",
 ]
 
 [dependency-groups]
@@ -81,8 +95,8 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["test"]
-# Coverage baseline: 54 (Phase 1, measured 2026-05-30). Ratchet upward only.
-addopts = "-q --cov-fail-under=54"
+# Coverage baseline: 58 (Phase 2, measured 2026-05-31). Ratchet upward only.
+addopts = "-q --cov-fail-under=58"
 
 [tool.coverage.run]
 branch = true

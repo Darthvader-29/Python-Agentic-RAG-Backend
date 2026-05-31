@@ -7,14 +7,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from components.generation import generate_final_response
-from components.preprocessing import process_file_pipeline
+from components.preprocessing import EMBEDDING_DIM, process_file_pipeline
 from components.retrieval import retrieve_context
 from components.router import route_query
 from config import settings
+from database import repository as repo
 from database.db_manager import PineconeClient
+from database.session import build_engine, build_sessionmaker
 from dependencies import (
+    get_db_session,
+    get_db_sessionmaker,
     get_embedding_client,
     get_pinecone_client,
     get_s3_client,
@@ -37,9 +42,11 @@ async def lifespan(app: FastAPI):
     app.state.s3 = S3Client.from_settings(settings)
     app.state.embedder = HuggingFaceClient.from_settings(settings)
     app.state.web = DuckDuckGoClient()
+    app.state.db_engine = build_engine(settings)
+    app.state.db_sessionmaker = build_sessionmaker(app.state.db_engine)
     logger.info("clients_initialized", environment=settings.ENVIRONMENT)
     yield
-    # no async resources to close in Phase 1 (sync SDKs); hook reserved for later phases
+    await app.state.db_engine.dispose()
 
 
 app = FastAPI(
@@ -73,7 +80,6 @@ class ChatRequest(BaseModel):
 
 class CleanupRequest(BaseModel):
     session_id: str
-    file_keys: list[str] | None = []
 
 
 class UploadResponse(BaseModel):
@@ -85,13 +91,14 @@ class UploadResponse(BaseModel):
 
 # ========= HELPERS FOR COMBINED ROUTING =========
 
+
 RAG_THRESHOLD = 0.4
 
 
 async def get_query_embedding(text: str, embedder: HuggingFaceClient) -> list[float]:
     """Get a single 384-dim embedding using the same model as ingestion."""
     embs = await embedder.embed_batch([text], batch_size=1)
-    return embs[0] if embs else [0.0] * 384
+    return embs[0] if embs else [0.0] * EMBEDDING_DIM
 
 
 async def check_docs_relevant(
@@ -152,15 +159,27 @@ async def upload(
     s3: S3Client = Depends(get_s3_client),
     embedder: HuggingFaceClient = Depends(get_embedding_client),
     pinecone: PineconeClient = Depends(get_pinecone_client),
+    db: AsyncSession = Depends(get_db_session),
+    session_factory=Depends(get_db_sessionmaker),
 ):
-    """Upload file to S3 and start ingestion in background."""
+    """Upload file to S3, record session/document in Postgres, start ingestion."""
     try:
         filename = file.filename or "upload"
         s3_key = await s3.upload_fileobj(file.file, filename)
 
-        # Clients are app.state singletons (safe to pass into background task)
+        await repo.get_or_create_session(db, session_id)
+        await repo.create_document(db, session_id=session_id, s3_key=s3_key, filename=filename)
+
+        # sessionmaker (not the request session) is safe to pass to background tasks
         background_tasks.add_task(
-            process_file_pipeline, s3_key, filename, session_id, s3, embedder, pinecone
+            process_file_pipeline,
+            s3_key,
+            filename,
+            session_id,
+            s3,
+            embedder,
+            pinecone,
+            session_factory,
         )
 
         return UploadResponse(
@@ -182,6 +201,7 @@ async def chat(
     pinecone: PineconeClient = Depends(get_pinecone_client),
     embedder: HuggingFaceClient = Depends(get_embedding_client),
     web: DuckDuckGoClient = Depends(get_web_search_client),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """Main chat endpoint: route → relevance check → retrieve → generate."""
     try:
@@ -193,9 +213,7 @@ async def chat(
             session_id=session_id[:8],
         )
 
-        base_route = await route_query(
-            request.message, session_id, request.web_search_allowed, pinecone
-        )
+        base_route = await route_query(request.message, session_id, request.web_search_allowed, db)
 
         has_docs, docs_relevant = await check_docs_relevant(
             request.message, session_id, pinecone, embedder
@@ -255,20 +273,22 @@ async def cleanup_session(
     request: CleanupRequest,
     s3: S3Client = Depends(get_s3_client),
     pinecone: PineconeClient = Depends(get_pinecone_client),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    """Delete vectors and S3 objects for a session."""
+    """Delete Pinecone vectors, S3 objects, and Postgres state for a session."""
     try:
         logger.info("cleanup_request", session_id=request.session_id)
 
-        file_keys = request.file_keys or await pinecone.list_s3_keys_for_session(request.session_id)
-
+        keys = await repo.list_s3_keys_for_session(db, request.session_id)
         await pinecone.delete_vectors_by_session(request.session_id)
-        await s3.delete_objects(file_keys)
+        if keys:
+            await s3.delete_objects(keys)
+        await repo.delete_session(db, request.session_id)
 
         return {
             "status": "cleaned",
             "session_id": request.session_id,
-            "deleted_files": len(file_keys or []),
+            "deleted_files": len(keys),
         }
     except Exception as e:
         logger.error("cleanup_failed", exc_info=True)

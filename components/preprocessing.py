@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 import structlog
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from database import repository as repo
 from database.doc_parser import DocumentParser
+from database.models import DocumentStatus
 
 if TYPE_CHECKING:
     from database.db_manager import PineconeClient
@@ -29,17 +31,24 @@ async def process_file_pipeline(
     s3: "S3Client",
     embedder: "HuggingFaceClient",
     pinecone: "PineconeClient",
+    session_factory,
 ) -> None:
     """
-    1. Download from S3
-    2. Extract text
-    3. Chunk
-    4. Embed with HuggingFace
-    5. Save to Pinecone
+    1. Mark document PROCESSING in Postgres
+    2. Download from S3
+    3. Extract text
+    4. Chunk
+    5. Embed with HuggingFace
+    6. Save to Pinecone
+    7. Mark document READY (or FAILED on error)
     """
     temp_path = None
     try:
         logger.info("ingestion_start", filename=filename, s3_key=file_key)
+
+        async with session_factory() as db:
+            await repo.set_document_status(db, s3_key=file_key, status=DocumentStatus.PROCESSING)
+            await db.commit()
 
         temp_path = await s3.download_to_temp(file_key)
         logger.info("ingestion_downloaded", temp_path=temp_path)
@@ -49,6 +58,9 @@ async def process_file_pipeline(
 
         if not raw_text.strip():
             logger.info("ingestion_empty", reason="no text extracted from document")
+            async with session_factory() as db:
+                await repo.set_document_status(db, s3_key=file_key, status=DocumentStatus.READY)
+                await db.commit()
             return
 
         splitter = RecursiveCharacterTextSplitter(
@@ -59,6 +71,9 @@ async def process_file_pipeline(
 
         if not chunks:
             logger.info("ingestion_empty", reason="no valid chunks created")
+            async with session_factory() as db:
+                await repo.set_document_status(db, s3_key=file_key, status=DocumentStatus.READY)
+                await db.commit()
             return
 
         logger.info("ingestion_embedding_start")
@@ -95,8 +110,18 @@ async def process_file_pipeline(
         await pinecone.save_vectors(vectors)
         logger.info("ingestion_complete", vectors_saved=len(vectors))
 
+        async with session_factory() as db:
+            await repo.set_document_status(db, s3_key=file_key, status=DocumentStatus.READY)
+            await db.commit()
+
     except Exception as e:
         logger.error("ingestion_failed", error=str(e), exc_info=True)
+        try:
+            async with session_factory() as db:
+                await repo.set_document_status(db, s3_key=file_key, status=DocumentStatus.FAILED)
+                await db.commit()
+        except Exception:
+            logger.error("ingestion_status_update_failed", exc_info=True)
         raise
 
     finally:

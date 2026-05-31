@@ -1,7 +1,8 @@
 """Router module: Uses Gemini to classify queries into RAG, WEB, or DIRECT.
 
 Gemini client stays module-level global — per-user BYOK keys and provider
-abstraction are deferred to Phase 4. Only the Pinecone session-check is injected.
+abstraction are deferred to Phase 4. The session-check now reads from Postgres
+via the repository (Phase 2).
 """
 
 from typing import TYPE_CHECKING, Literal
@@ -11,10 +12,11 @@ import structlog
 from google.api_core.exceptions import GoogleAPIError
 
 from config import settings
+from database import repository as repo
 from exceptions import AppException
 
 if TYPE_CHECKING:
-    from database.db_manager import PineconeClient
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 genai.configure(api_key=settings.GOOGLE_API_KEY)
 # Free tier Gemini model (global; BYOK + provider abstraction deferred to Phase 4)
@@ -33,10 +35,10 @@ async def route_query(
     query: str,
     session_id: str,
     web_search_allowed: bool,
-    pinecone: "PineconeClient",
+    db: "AsyncSession",
 ) -> Literal["RAG", "WEB", "DIRECT"]:
     """Route query to RAG, WEB, or DIRECT using Gemini."""
-    has_documents = await pinecone.has_session_documents(session_id)
+    has_documents = await repo.session_has_documents(db, session_id)
 
     prompt = _build_routing_prompt(query, has_documents, web_search_allowed)
 

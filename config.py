@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_ACCESS_KEY: str
+    DATABASE_URL: str  # e.g. postgresql+asyncpg://user:pass@host/db (or postgresql:// — transformed at engine build)
     # Optional
     UPLOADTHING_API_KEY: str | None = None
     PINECONE_INDEX_NAME: str = "rag-knowledge-base"
