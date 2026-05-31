@@ -142,3 +142,12 @@ class LLMKeyRepository:
             select(UserLLMKey).where(UserLLMKey.user_id == user_id, UserLLMKey.provider == provider)
         )
         return result.scalar_one_or_none()
+
+
+# ── Phase 4: per-request key lookup ──────────────────────────────────────────
+
+
+async def get_user_llm_key(db: AsyncSession, *, user_id: uuid.UUID) -> UserLLMKey | None:
+    """Return any active LLM key for the user (first row; provider field names which adapter)."""
+    result = await db.execute(select(UserLLMKey).where(UserLLMKey.user_id == user_id).limit(1))
+    return result.scalar_one_or_none()

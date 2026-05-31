@@ -7,7 +7,7 @@ singleton; Phase 1 moves this behind dependency injection.
 from typing import Literal
 
 from cryptography.fernet import Fernet
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +43,11 @@ class Settings(BaseSettings):
 
     # --- CORS (Phase 3) ---
     CORS_ALLOWED_ORIGINS: list[str] = []
+
+    # --- LLM provider (Phase 4) ---
+    DEFAULT_LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
+    DEFAULT_LLM_MODEL: str = "gemini-2.5-flash"
+    LLM_FALLBACK_API_KEY: SecretStr = SecretStr("")  # optional server-side fallback; BYOK preferred
 
     @field_validator("LLM_KEY_ENCRYPTION_KEY")
     @classmethod

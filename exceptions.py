@@ -22,3 +22,36 @@ class InvalidTokenTypeError(Exception):
         self.expected = expected
         self.got = got
         super().__init__(f"Expected token type '{expected}', got '{got}'")
+
+
+# ── Phase 4: Provider-neutral LLM error taxonomy ─────────────────────────────
+
+
+class LLMError(AppException):
+    """Base for all provider-neutral LLM failures."""
+
+    status_code = 502
+    default_detail = "The AI provider returned an error. Please try again."
+
+    def __init__(self, detail: str | None = None) -> None:
+        super().__init__(status_code=self.status_code, detail=detail or self.default_detail)
+
+
+class LLMAuthError(LLMError):
+    status_code = 401
+    default_detail = "The AI provider rejected the API key. Check the key and permissions."
+
+
+class LLMRateLimitError(LLMError):
+    status_code = 429
+    default_detail = "The AI provider rate limit was reached. Please retry later."
+
+
+class LLMUnavailableError(LLMError):
+    status_code = 503
+    default_detail = "The AI provider is temporarily unavailable. Please retry later."
+
+
+class LLMResponseError(LLMError):
+    status_code = 502
+    default_detail = "The AI provider returned an unusable response."

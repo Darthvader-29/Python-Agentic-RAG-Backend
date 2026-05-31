@@ -32,6 +32,10 @@ def _fresh(monkeypatch, env):
         "ACCESS_TOKEN_TTL_MINUTES",
         "REFRESH_TOKEN_TTL_DAYS",
         "CORS_ALLOWED_ORIGINS",
+        # Phase 4 optional fields
+        "DEFAULT_LLM_PROVIDER",
+        "DEFAULT_LLM_MODEL",
+        "LLM_FALLBACK_API_KEY",
     ]:
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
@@ -142,3 +146,29 @@ def test_valid_fernet_key_passes_validation(monkeypatch):
     env["LLM_KEY_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
     c = _fresh(monkeypatch, env)
     assert c.settings.LLM_KEY_ENCRYPTION_KEY is not None
+
+
+# ── Phase 4 Settings tests ────────────────────────────────────────────────────
+
+
+def test_default_provider_settings(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.DEFAULT_LLM_PROVIDER == "gemini"
+    assert c.settings.DEFAULT_LLM_MODEL  # non-empty
+    assert c.settings.LLM_FALLBACK_API_KEY.get_secret_value() == ""  # optional, empty default
+
+
+def test_default_llm_provider_can_be_overridden(monkeypatch):
+    env = dict(REQUIRED)
+    env["DEFAULT_LLM_PROVIDER"] = "openai"
+    env["DEFAULT_LLM_MODEL"] = "gpt-4o-mini"
+    c = _fresh(monkeypatch, env)
+    assert c.settings.DEFAULT_LLM_PROVIDER == "openai"
+    assert c.settings.DEFAULT_LLM_MODEL == "gpt-4o-mini"
+
+
+def test_llm_fallback_key_set(monkeypatch):
+    env = dict(REQUIRED)
+    env["LLM_FALLBACK_API_KEY"] = "sk-server-key"
+    c = _fresh(monkeypatch, env)
+    assert c.settings.LLM_FALLBACK_API_KEY.get_secret_value() == "sk-server-key"

@@ -19,6 +19,7 @@ from dependencies import (
     get_s3_client,
     get_web_search_client,
 )
+from llm.dependencies import get_llm_provider
 
 
 @pytest.fixture
@@ -85,6 +86,11 @@ def di_client(fake_pinecone, fake_embedder, fake_s3, fake_web, fake_db, fake_use
     app.dependency_overrides[get_db_sessionmaker] = lambda: fake_sessionmaker
     # Phase 3: bypass auth for DI tests
     app.dependency_overrides[get_current_user] = lambda: fake_user
+    # Phase 4: bypass LLM provider DI for infrastructure tests
+    fake_provider = AsyncMock()
+    fake_provider.route.return_value = "DIRECT"
+    fake_provider.generate.return_value = "Test answer"
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
 
     with patch.object(PineconeClient, "ensure_index", new_callable=AsyncMock):
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -144,19 +150,17 @@ def test_cleanup_no_files_skips_s3_delete(di_client, fake_pinecone, fake_s3, fak
 
 
 def test_chat_uses_di_clients(di_client, fake_pinecone, fake_embedder, fake_web, fake_user):
-    """chat endpoint resolves all clients from DI; route_query reads has_docs from DB."""
+    """chat endpoint resolves all clients from DI; session_has_documents called before routing."""
     fake_session = MagicMock()
     fake_session.user_id = fake_user.id
 
     with (
         patch("app.repo.get_session", new_callable=AsyncMock) as mock_get_sess,
-        patch("components.router.repo.session_has_documents", new_callable=AsyncMock) as mock_hd,
-        patch("components.router.gemini_model.generate_content_async") as mock_gemini,
+        patch("app.repo.session_has_documents", new_callable=AsyncMock) as mock_hd,
         patch("app.generate_final_response", new_callable=AsyncMock) as mock_gen,
     ):
         mock_get_sess.return_value = fake_session
         mock_hd.return_value = False
-        mock_gemini.return_value = MagicMock(text="DIRECT")
         mock_gen.return_value = "Test answer"
 
         resp = di_client.post(
@@ -169,9 +173,9 @@ def test_chat_uses_di_clients(di_client, fake_pinecone, fake_embedder, fake_web,
         )
 
     assert resp.status_code == 200
-    # Postgres (not Pinecone) is queried for has_documents
+    # Phase 4: session_has_documents is now called from app.py before route_query
     mock_hd.assert_awaited()
-    # Vector search still goes through Pinecone for relevance
+    # Vector search still goes through Pinecone for relevance checking
     fake_pinecone.search_vectors.assert_awaited()
 
 

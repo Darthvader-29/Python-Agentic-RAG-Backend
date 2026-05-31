@@ -33,6 +33,8 @@ from exceptions import AppException, app_exception_handler
 from integrations.duckduckgo.client import DuckDuckGoClient
 from integrations.huggingface.client import HuggingFaceClient
 from integrations.s3.client import S3Client
+from llm.base import LLMProvider
+from llm.dependencies import get_llm_provider
 from logging_config import configure_logging
 
 logger = structlog.get_logger(__name__)
@@ -218,6 +220,7 @@ async def upload(
 @app.post("/api/chat")
 async def chat(
     request: ChatRequest,
+    provider: LLMProvider = Depends(get_llm_provider),
     current_user: User = Depends(get_current_user),
     pinecone: PineconeClient = Depends(get_pinecone_client),
     embedder: HuggingFaceClient = Depends(get_embedding_client),
@@ -243,7 +246,15 @@ async def chat(
         elif existing.user_id is None:
             existing.user_id = current_user.id
 
-        base_route = await route_query(request.message, session_id, request.web_search_allowed, db)
+        # Phase 4: get has_documents from DB for routing, then check Pinecone relevance
+        has_documents_db = await repo.session_has_documents(db, session_id)
+
+        base_route = await route_query(
+            provider,
+            request.message,
+            has_documents=has_documents_db,
+            web_search_allowed=request.web_search_allowed,
+        )
 
         has_docs, docs_relevant = await check_docs_relevant(
             request.message, session_id, pinecone, embedder
@@ -275,6 +286,7 @@ async def chat(
         )
 
         answer = await generate_final_response(
+            provider,
             request.message,
             context,
             final_route,  # type: ignore[arg-type]

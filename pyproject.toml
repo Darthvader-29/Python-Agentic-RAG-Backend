@@ -31,6 +31,8 @@ dependencies = [
     "cryptography>=48.0.0",
     "pyjwt>=2.13.0",
     "bcrypt>=5.0.0",
+    "anthropic>=0.105.2",
+    "google-genai>=2.7.0",
 ]
 
 [dependency-groups]
@@ -48,6 +50,7 @@ ignore = ["E501", "B008"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "test/*" = ["F401", "F811", "B017"]
+"test/**/*" = ["F401", "F811", "B017"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -80,6 +83,11 @@ module = ["components.generation"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
+# google-generativeai Client API stubs incomplete; anyio.to_thread not fully typed
+module = ["llm.gemini", "llm._prompts", "llm.base", "llm.dependencies"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
 # FastAPI exception handler overload + UploadFile.filename nullability — tech debt
 module = ["app"]
 ignore_errors = true
@@ -103,12 +111,12 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["test"]
-# Coverage baseline: 67 (Phase 3, measured 2026-05-31). Ratchet upward only.
-addopts = "-q --cov-fail-under=67"
+# Coverage baseline: 77 (Phase 4, measured 2026-05-31). Ratchet upward only.
+addopts = "-q --cov-fail-under=77"
 
 [tool.coverage.run]
 branch = true
-source = ["app", "config", "exceptions", "logging_config", "components", "database", "integrations", "auth"]
+source = ["app", "config", "exceptions", "logging_config", "components", "database", "integrations", "auth", "llm"]
 omit = ["test/*", "integrations/uploadthing/*"]
 
 [tool.coverage.report]
