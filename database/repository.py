@@ -51,6 +51,11 @@ async def create_document(
     return doc
 
 
+async def get_document(db: AsyncSession, document_id: str) -> Document | None:
+    """Return the Document row for document_id, or None if it doesn't exist."""
+    return await db.get(Document, document_id)
+
+
 async def set_document_status(db: AsyncSession, *, s3_key: str, status: DocumentStatus) -> None:
     await db.execute(update(Document).where(Document.s3_key == s3_key).values(status=status))
 

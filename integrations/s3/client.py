@@ -1,8 +1,14 @@
-"""Async S3 client wrapping boto3.
+"""Async S3 client wrapping boto3 — works against any S3-compatible store.
 
-In development (ENVIRONMENT=development), endpoint_url defaults to MinIO at
-http://localhost:9000 unless S3_ENDPOINT_URL is set explicitly.
-In production, endpoint_url=None → standard AWS S3.
+`endpoint_url` selects the backend:
+- production: set S3_ENDPOINT_URL to the provider, e.g. Backblaze B2 at
+  https://s3.<region>.backblazeb2.com. Leave it unset only to target real AWS S3.
+- development: defaults to MinIO at http://localhost:9000 unless S3_ENDPOINT_URL is set.
+
+Checksum note: botocore >= 1.36 emits `x-amz-checksum-crc32` request trailers by
+default, which Backblaze B2 / Cloudflare R2 / MinIO reject (HTTP 400/501). We pin
+request/response checksums to "when_required" so they are only sent when an
+operation truly needs them — harmless on real AWS, required for S3-compatible stores.
 """
 
 import asyncio
@@ -12,6 +18,7 @@ import uuid
 import boto3
 import structlog
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = structlog.get_logger(__name__)
@@ -38,7 +45,14 @@ class S3Client:
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             endpoint_url=endpoint_url,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                # botocore >= 1.36 sends x-amz-checksum-crc32 by default; B2/R2/MinIO
+                # reject it (400/501). Only send checksums when an op requires them.
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
         )
 
     @classmethod
@@ -57,6 +71,11 @@ class S3Client:
     @staticmethod
     def _make_key(filename: str) -> str:
         return f"uploads/{uuid.uuid4()}_{filename}"
+
+    @staticmethod
+    def make_user_key(user_id: object, filename: str) -> str:
+        """Phase 5 presigned-upload key, scoped under the owning user."""
+        return f"uploads/{user_id}/{uuid.uuid4()}_{filename}"
 
     @retry(**_RETRY)
     def _upload_sync(self, file_obj, key: str) -> None:
@@ -90,3 +109,30 @@ class S3Client:
 
     async def delete_objects(self, keys: list[str]) -> None:
         await asyncio.to_thread(self._delete_sync, keys)
+
+    # ── Phase 5: presigned PUT + existence check (client uploads direct to storage) ──
+
+    @retry(**_RETRY)
+    def _presign_put_sync(self, key: str, expires_in: int) -> str:
+        url: str = self._client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self._bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
+        return url
+
+    async def generate_presigned_url(self, key: str, *, expires_in: int = 900) -> str:
+        """A presigned PUT URL the client uploads to directly (bytes never touch the API)."""
+        return await asyncio.to_thread(self._presign_put_sync, key, expires_in)
+
+    def _head_sync(self, key: str) -> bool:
+        # Not retried: a 404 is a valid "not uploaded yet" answer, not a transient error.
+        try:
+            self._client.head_object(Bucket=self._bucket, Key=key)
+            return True
+        except ClientError:
+            return False
+
+    async def object_exists(self, key: str) -> bool:
+        """True if the object landed in storage — used by /api/upload/confirm to close the race."""
+        return await asyncio.to_thread(self._head_sync, key)

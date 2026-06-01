@@ -49,16 +49,17 @@ pipeline {
       steps {
         sh '''
           export PATH="$HOME/.local/bin:$PATH"
-          uv run mypy app.py config.py dependencies.py exceptions.py logging_config.py components database integrations
+          uv run mypy app.py config.py dependencies.py exceptions.py logging_config.py components database integrations worker
         '''
       }
     }
     stage('Test') {
       steps {
-        // Coverage baseline: 54 (Phase 1 measured 2026-05-30; ratchet upward only)
+        // Coverage baseline: 72 (Phase 5 measured 2026-06-01, no TEST_DATABASE_URL in CI;
+        // DB-backed tests skip here, so this floor is lower than the local with-DB gate of 78).
         sh '''
           export PATH="$HOME/.local/bin:$PATH"
-          uv run pytest --cov --cov-report=xml --junitxml=junit.xml --cov-fail-under=54
+          uv run pytest --cov --cov-report=xml --junitxml=junit.xml --cov-fail-under=72
         '''
       }
     }

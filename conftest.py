@@ -43,6 +43,10 @@ _DUMMY = {
     "LLM_KEY_ENCRYPTION_KEY": os.environ.get("LLM_KEY_ENCRYPTION_KEY")
     or Fernet.generate_key().decode(),
     "CORS_ALLOWED_ORIGINS": '["http://localhost:3000"]',
+    # Phase 5: lazy from_url → no network at construction. Rate-limit storage points at
+    # in-process memory so the offline suite exercises limits without a real Redis.
+    "REDIS_URL": "redis://localhost:6379/0",
+    "RATE_LIMIT_STORAGE_URI": "memory://",
 }
 for _k, _v in _DUMMY.items():
     os.environ.setdefault(_k, _v)  # a real shell/.env value still wins
@@ -98,3 +102,45 @@ async def db_session(_engine):
         yield session
     await txn.rollback()
     await conn.close()
+
+
+# ── Phase 5: rate-limiter isolation ──────────────────────────────────────────
+
+
+def _clear_limiter_storage() -> None:
+    """Clear the module-level slowapi limiter's in-memory counters, if app is loaded."""
+    import sys
+
+    app_mod = sys.modules.get("app")
+    limiter = getattr(app_mod, "limiter", None) if app_mod else None
+    if limiter is not None:
+        try:
+            limiter.reset()
+        except Exception:
+            pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """The slowapi limiter is a process-wide singleton with shared counters; reset it
+    around every test so accumulated hits don't bleed across tests (memory:// storage)."""
+    _clear_limiter_storage()
+    yield
+    _clear_limiter_storage()
+
+
+# ── Phase 5: Celery eager mode ───────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _celery_eager():
+    """Run Celery tasks inline (no broker/worker) so .delay() is synchronous and
+    exceptions propagate to the caller — keeps the suite offline and deterministic."""
+    try:
+        from worker.celery_app import celery_app
+    except Exception:
+        yield
+        return
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
+    yield

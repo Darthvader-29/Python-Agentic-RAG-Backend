@@ -27,5 +27,16 @@ services:
       mc mb -p local/${S3_BUCKET_NAME:-rag-documents};
       exit 0;"
 
+  # Phase 5: Redis backs the cache, slowapi rate-limit storage, and the Celery broker.
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   minio_data:

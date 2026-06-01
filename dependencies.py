@@ -6,6 +6,7 @@ returns it to any endpoint that declares it via Depends().
 
 from collections.abc import AsyncIterator
 
+import redis.asyncio as aioredis
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,10 @@ from integrations.s3.client import S3Client
 
 def get_pinecone_client(request: Request) -> PineconeClient:
     return request.app.state.pinecone
+
+
+def get_redis(request: Request) -> aioredis.Redis:
+    return request.app.state.redis
 
 
 def get_s3_client(request: Request) -> S3Client:

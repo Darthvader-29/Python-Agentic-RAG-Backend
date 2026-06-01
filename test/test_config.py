@@ -36,6 +36,13 @@ def _fresh(monkeypatch, env):
         "DEFAULT_LLM_PROVIDER",
         "DEFAULT_LLM_MODEL",
         "LLM_FALLBACK_API_KEY",
+        # Phase 5 optional fields
+        "REDIS_URL",
+        "CELERY_BROKER_URL",
+        "RATE_LIMIT_STORAGE_URI",
+        "RATE_LIMIT_CHAT",
+        "RATE_LIMIT_UPLOAD",
+        "RATE_LIMIT_DEFAULT",
     ]:
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
@@ -172,3 +179,35 @@ def test_llm_fallback_key_set(monkeypatch):
     env["LLM_FALLBACK_API_KEY"] = "sk-server-key"
     c = _fresh(monkeypatch, env)
     assert c.settings.LLM_FALLBACK_API_KEY.get_secret_value() == "sk-server-key"
+
+
+# ── Phase 5 Settings tests ────────────────────────────────────────────────────
+
+
+def test_redis_url_default(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.REDIS_URL == "redis://localhost:6379/0"
+
+
+def test_rate_limit_defaults(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.RATE_LIMIT_CHAT == "30/minute"
+    assert c.settings.RATE_LIMIT_UPLOAD == "10/minute"
+    assert c.settings.RATE_LIMIT_DEFAULT == "120/minute"
+
+
+def test_celery_broker_falls_back_to_redis(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.celery_broker_url == c.settings.REDIS_URL
+
+
+def test_celery_broker_explicit_overrides(monkeypatch):
+    env = dict(REQUIRED)
+    env["CELERY_BROKER_URL"] = "redis://broker:6379/1"
+    c = _fresh(monkeypatch, env)
+    assert c.settings.celery_broker_url == "redis://broker:6379/1"
+
+
+def test_rate_limit_storage_falls_back_to_redis(monkeypatch):
+    c = _fresh(monkeypatch, REQUIRED)
+    assert c.settings.rate_limit_storage_uri == c.settings.REDIS_URL

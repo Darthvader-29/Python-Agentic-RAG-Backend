@@ -53,6 +53,19 @@ def test_s3_from_settings_prod_uses_real_s3():
         assert kwargs["endpoint_url"] is None
 
 
+def test_s3_client_disables_default_checksums():
+    """Checksums are pinned to 'when_required' so S3-compatible stores (Backblaze B2,
+    MinIO) don't reject botocore >= 1.36's default x-amz-checksum-crc32 trailers."""
+    with patch("integrations.s3.client.boto3.client") as mock_boto:
+        mock_boto.return_value = MagicMock()
+        S3Client.from_settings(_dev_settings())
+        _, kwargs = mock_boto.call_args
+        config = kwargs["config"]
+        assert config.request_checksum_calculation == "when_required"
+        assert config.response_checksum_validation == "when_required"
+        assert config.signature_version == "s3v4"
+
+
 def test_di_providers_read_app_state():
     """get_*_client provider functions return the object stored on app.state."""
     from unittest.mock import MagicMock
@@ -81,6 +94,56 @@ def test_di_providers_read_app_state():
     assert get_s3_client(mock_request) is fake_s3
     assert get_embedding_client(mock_request) is fake_emb
     assert get_web_search_client(mock_request) is fake_web
+
+
+@pytest.mark.asyncio
+async def test_s3_generate_presigned_url():
+    """generate_presigned_url offloads boto3's put_object presign and returns the URL."""
+    with patch("integrations.s3.client.boto3.client") as mock_boto:
+        inner = MagicMock()
+        inner.generate_presigned_url.return_value = "https://s3.example/put?sig=1"
+        mock_boto.return_value = inner
+        client = S3Client(bucket="b", region="r", access_key="a", secret_key="s")
+
+        url = await client.generate_presigned_url("uploads/k", expires_in=600)
+
+        assert url == "https://s3.example/put?sig=1"
+        _, kwargs = inner.generate_presigned_url.call_args
+        assert kwargs["Params"] == {"Bucket": "b", "Key": "uploads/k"}
+        assert kwargs["ExpiresIn"] == 600
+
+
+@pytest.mark.asyncio
+async def test_s3_object_exists_true_and_false():
+    """object_exists is True on a successful head, False on a ClientError (e.g. 404)."""
+    from botocore.exceptions import ClientError
+
+    with patch("integrations.s3.client.boto3.client") as mock_boto:
+        inner = MagicMock()
+        mock_boto.return_value = inner
+        client = S3Client(bucket="b", region="r", access_key="a", secret_key="s")
+
+        inner.head_object.return_value = {}
+        assert await client.object_exists("k") is True
+
+        inner.head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        assert await client.object_exists("k") is False
+
+
+@pytest.mark.asyncio
+async def test_get_redis_roundtrips_via_app_state():
+    """get_redis returns the app.state Redis client; a value set via one call reads back."""
+    import fakeredis.aioredis
+
+    from dependencies import get_redis
+
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    mock_request = MagicMock()
+    mock_request.app.state.redis = fake
+
+    client = get_redis(mock_request)
+    await client.set("phase5:key", "value")
+    assert await client.get("phase5:key") == "value"
 
 
 # ── asyncio.to_thread offload ─────────────────────────────────────────────────

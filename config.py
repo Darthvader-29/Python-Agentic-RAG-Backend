@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     DEFAULT_LLM_MODEL: str = "gemini-2.5-flash"
     LLM_FALLBACK_API_KEY: SecretStr = SecretStr("")  # optional server-side fallback; BYOK preferred
 
+    # --- Phase 5: Redis / Celery / rate limiting ---
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str | None = None  # falls back to REDIS_URL (see celery_broker_url)
+    RATE_LIMIT_STORAGE_URI: str | None = None  # falls back to REDIS_URL; tests set "memory://"
+    RATE_LIMIT_CHAT: str = "30/minute"
+    RATE_LIMIT_UPLOAD: str = "10/minute"
+    RATE_LIMIT_DEFAULT: str = "120/minute"
+
+    @property
+    def celery_broker_url(self) -> str:
+        return self.CELERY_BROKER_URL or self.REDIS_URL
+
+    @property
+    def rate_limit_storage_uri(self) -> str:
+        return self.RATE_LIMIT_STORAGE_URI or self.REDIS_URL
+
     @field_validator("LLM_KEY_ENCRYPTION_KEY")
     @classmethod
     def _validate_fernet_key(cls, v: str) -> str:
