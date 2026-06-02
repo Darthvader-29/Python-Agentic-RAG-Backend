@@ -114,7 +114,17 @@ def test_splitter_fence_split_across_deltas():
     """The opener, body, and closing fence each arrive in separate awkward deltas."""
     sp = ComponentStreamSplitter()
     events: list = []
-    for delta in ["Here ", "``", "`js", "on\n", '{"type": "call', 'out", "text": ', '"x"}', "\n``", "` done"]:
+    for delta in [
+        "Here ",
+        "``",
+        "`js",
+        "on\n",
+        '{"type": "call',
+        'out", "text": ',
+        '"x"}',
+        "\n``",
+        "` done",
+    ]:
         events += sp.feed(delta)
     events += sp.flush()
     tokens, comps = _drain(events)
@@ -136,7 +146,7 @@ def test_splitter_non_json_fence_passes_through_as_prose():
 
 def test_splitter_malformed_json_fence_passes_through_verbatim():
     sp = ComponentStreamSplitter()
-    events = sp.feed('```json\n{not valid}\n```')
+    events = sp.feed("```json\n{not valid}\n```")
     events += sp.flush()
     tokens, comps = _drain(events)
     assert comps == []

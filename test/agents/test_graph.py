@@ -57,7 +57,9 @@ class _FakeWeb:
         return self.results
 
 
-def _initial_state(provider, pinecone, embedder, web, *, has_documents, web_allowed, query="what is X?"):
+def _initial_state(
+    provider, pinecone, embedder, web, *, has_documents, web_allowed, query="what is X?"
+):
     return {
         "query": query,
         "session_id": "s1",
@@ -83,9 +85,7 @@ async def _linear_answer(provider, pinecone, embedder, web, *, query, has_docume
     final_route = decide_combined_route(
         base_route, has_documents=has_docs, docs_relevant=docs_relevant, web_allowed=web_allowed
     )
-    context = await retrieve_context(
-        query, final_route, "s1", web_allowed, pinecone, embedder, web
-    )
+    context = await retrieve_context(query, final_route, "s1", web_allowed, pinecone, embedder, web)
     return await generate_final_response(provider, query, context, final_route)  # type: ignore[arg-type]
 
 
@@ -156,8 +156,14 @@ async def test_graph_strips_component_block_from_answer():
     p = _FakeProvider("DIRECT", gen)
     graph = build_graph()
     final = await graph.ainvoke(
-        _initial_state(p, _FakePinecone([]), _FakeEmbedder(), _FakeWeb([]),
-                       has_documents=False, web_allowed=False)
+        _initial_state(
+            p,
+            _FakePinecone([]),
+            _FakeEmbedder(),
+            _FakeWeb([]),
+            has_documents=False,
+            web_allowed=False,
+        )
     )
     assert "```json" not in final["answer"]
     assert final["components"] == [{"type": "callout", "level": "info", "text": "note"}]
@@ -192,9 +198,14 @@ async def test_graph_direct_skips_retrieval():
     p = _FakeProvider("DIRECT", "Direct.")
     graph = build_graph()
     final = await graph.ainvoke(
-        _initial_state(p, _FakePinecone([{"text": "x", "score": 0.9}]), _FakeEmbedder(),
-                       _FakeWeb([{"title": "t", "snippet": "s"}]),
-                       has_documents=False, web_allowed=False)
+        _initial_state(
+            p,
+            _FakePinecone([{"text": "x", "score": 0.9}]),
+            _FakeEmbedder(),
+            _FakeWeb([{"title": "t", "snippet": "s"}]),
+            has_documents=False,
+            web_allowed=False,
+        )
     )
     assert final["route"] == "DIRECT"
     assert "vector_result" not in final

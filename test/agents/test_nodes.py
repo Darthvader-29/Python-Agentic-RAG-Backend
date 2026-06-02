@@ -145,7 +145,9 @@ async def test_vector_node_uses_rewritten_query_for_embedding():
     emb = _FakeEmbedder()
     pc = _FakePinecone(matches=[{"text": "c", "score": 0.9}])
     await vector_node(
-        _state(embedder=emb, pinecone=pc, query="raw", rewritten_query="resolved query", route="RAG")
+        _state(
+            embedder=emb, pinecone=pc, query="raw", rewritten_query="resolved query", route="RAG"
+        )
     )
     assert emb.calls == ["resolved query"]
 
@@ -166,7 +168,12 @@ async def test_vector_node_search_failure_degrades_gracefully():
 
 @pytest.mark.asyncio
 async def test_web_node_writes_web_result_disjoint_key():
-    web = _FakeWeb(results=[{"title": "T1", "snippet": "snippet one"}, {"title": "T2", "snippet": "snippet two"}])
+    web = _FakeWeb(
+        results=[
+            {"title": "T1", "snippet": "snippet one"},
+            {"title": "T2", "snippet": "snippet two"},
+        ]
+    )
     out = await web_node(_state(web=web, route="WEB"))
     assert "snippet one" in out["web_result"]
     assert "snippet two" in out["web_result"]
@@ -219,7 +226,7 @@ async def test_synthesis_node_non_streaming_returns_prose_and_components():
 
 @pytest.mark.asyncio
 async def test_synthesis_node_drops_malformed_component_keeps_prose():
-    p = _FakeProvider(gen_returns='Answer body.\n```json\n{bad json}\n```')
+    p = _FakeProvider(gen_returns="Answer body.\n```json\n{bad json}\n```")
     out = await synthesis_node(_state(provider=p, route="DIRECT"), _noop_writer, _NO_STREAM_CONFIG)
     assert "Answer body." in out["answer"]
     assert out["components"] == []  # malformed → dropped
@@ -275,7 +282,9 @@ async def test_synthesis_node_streams_component_whole_even_when_fence_split():
         _state(provider=p, route="RAG", context="ctx"), _capturing_writer(sink), _STREAM_CONFIG
     )
     comp_events = [c for c in sink if c["kind"] == "component"]
-    assert comp_events == [{"data": {"type": "callout", "level": "info", "text": "hi"}, "kind": "component"}]
+    assert comp_events == [
+        {"data": {"type": "callout", "level": "info", "text": "hi"}, "kind": "component"}
+    ]
     token_text = "".join(c["text"] for c in sink if c["kind"] == "token")
     assert "Intro " in token_text and "end" in token_text
     assert "```json" not in token_text  # recognized fence never streamed as prose

@@ -30,7 +30,7 @@ from database.repository import UserRepository
 from dependencies import get_db_session
 from exceptions import InvalidTokenTypeError
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/register", status_code=201, response_model=UserOut)

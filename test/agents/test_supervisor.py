@@ -95,9 +95,7 @@ async def test_supervisor_web_intent_with_docs_but_web_disabled_routes_rag():
 async def test_supervisor_passes_flags_to_provider_route():
     p = _FakeProvider("DIRECT")
     await supervisor_node(_state(p, has_documents=True, web_allowed=False))
-    assert p.route_calls == [
-        {"query": "What is X?", "has_documents": True, "web_allowed": False}
-    ]
+    assert p.route_calls == [{"query": "What is X?", "has_documents": True, "web_allowed": False}]
 
 
 # ── rewritten_query ───────────────────────────────────────────────────────────
