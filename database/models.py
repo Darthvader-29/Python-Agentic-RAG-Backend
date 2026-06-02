@@ -83,6 +83,9 @@ class Session(Base):
     documents: Mapped[list["Document"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", passive_deletes=True
     )
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class Document(Base):
@@ -113,3 +116,22 @@ class Document(Base):
     )
 
     session: Mapped["Session"] = relationship(back_populates="documents")
+
+
+# ── Phase 6: Message (conversation history) ──────────────────────────────────
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    session: Mapped["Session"] = relationship(back_populates="messages")

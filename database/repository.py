@@ -1,4 +1,4 @@
-"""Async data-access layer for session, document, user, and LLM key state.
+"""Async data-access layer for session, document, user, LLM key, and message state.
 
 Each function/method accepts an AsyncSession and performs a single focused query.
 The caller (endpoint or background task) owns the transaction boundary.
@@ -10,7 +10,7 @@ from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Document, DocumentStatus, Session, User, UserLLMKey
+from database.models import Document, DocumentStatus, Message, Session, User, UserLLMKey
 
 # ── Session ──────────────────────────────────────────────────────────────────
 
@@ -156,3 +156,27 @@ async def get_user_llm_key(db: AsyncSession, *, user_id: uuid.UUID) -> UserLLMKe
     """Return any active LLM key for the user (first row; provider field names which adapter)."""
     result = await db.execute(select(UserLLMKey).where(UserLLMKey.user_id == user_id).limit(1))
     return result.scalar_one_or_none()
+
+
+# ── Phase 6: conversation history ────────────────────────────────────────────
+
+
+async def save_message(db: AsyncSession, *, session_id: str, role: str, content: str) -> Message:
+    """Persist one conversation turn (role: "user" | "assistant")."""
+    msg = Message(session_id=session_id, role=role, content=content)
+    db.add(msg)
+    await db.flush()
+    return msg
+
+
+async def load_recent_messages(db: AsyncSession, *, session_id: str, limit: int) -> list[Message]:
+    """Return the last `limit` messages for the session in chronological (oldest-first) order."""
+    stmt = (
+        select(Message)
+        .where(Message.session_id == session_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit)
+    )
+    rows = list(await db.scalars(stmt))
+    rows.reverse()
+    return rows
