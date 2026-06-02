@@ -38,6 +38,26 @@ def test_unknown_provider():
 
 
 def test_model_override(monkeypatch):
+    """A single `model` arg sets BOTH route and synth slots (backward compat)."""
     monkeypatch.setattr("llm.openai.AsyncOpenAI", lambda **kw: None)
     provider = build_provider("openai", "k", model="gpt-4o")
-    assert provider._model == "gpt-4o"
+    assert provider._route_model == "gpt-4o"
+    assert provider._synth_model == "gpt-4o"
+
+
+def test_per_node_tiering(monkeypatch):
+    """route_model / synth_model set the cheap and strong slots independently."""
+    monkeypatch.setattr("llm.openai.AsyncOpenAI", lambda **kw: None)
+    provider = build_provider("openai", "k", route_model="gpt-4o-mini", synth_model="gpt-4o")
+    assert provider._route_model == "gpt-4o-mini"
+    assert provider._synth_model == "gpt-4o"
+
+
+def test_tier_models_take_precedence_over_model(monkeypatch):
+    """Explicit route_model/synth_model win over the single `model` fallback."""
+    monkeypatch.setattr("llm.gemini.genai.Client", lambda api_key=None, **kw: None)  # noqa: ARG005
+    provider = build_provider(
+        "gemini", "k", model="ignored", route_model="cheap", synth_model="strong"
+    )
+    assert provider._route_model == "cheap"
+    assert provider._synth_model == "strong"
