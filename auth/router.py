@@ -1,10 +1,22 @@
-"""Auth endpoints: register / login / refresh (Phase 3)."""
+"""Auth endpoints: register / login / refresh (Phase 3) + guest mint / upgrade (Phase 6)."""
+
+import secrets
+import uuid
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.schemas import LoginIn, RefreshIn, RegisterIn, TokenPair, UserOut
+from auth.dependencies import get_current_user
+from auth.schemas import (
+    GuestTokenPair,
+    LoginIn,
+    RefreshIn,
+    RegisterIn,
+    TokenPair,
+    UpgradeIn,
+    UserOut,
+)
 from auth.security import (
     create_access_token,
     create_refresh_token,
@@ -13,6 +25,7 @@ from auth.security import (
     require_token_type,
     verify_password,
 )
+from database.models import User
 from database.repository import UserRepository
 from dependencies import get_db_session
 from exceptions import InvalidTokenTypeError
@@ -31,6 +44,60 @@ async def register(
     if await repo.get_by_username(body.username):
         raise HTTPException(409, "username already taken")
     user = await repo.create(
+        email=body.email,
+        username=body.username,
+        hashed_password=hash_password(body.password),
+    )
+    return UserOut.model_validate(user)
+
+
+@router.post("/guest", status_code=201, response_model=GuestTokenPair)
+async def guest(
+    db: AsyncSession = Depends(get_db_session),
+) -> GuestTokenPair:
+    """Mint an anonymous guest account + token pair (Phase 6).
+
+    The placeholder email/username are namespaced + uuid-suffixed so they never collide with a
+    real signup, and the password hash is over random bytes (no one can log in as a guest). The
+    tokens carry ``is_guest=True`` so the client can tell an anonymous session after a reload.
+    """
+    # Collision-proof placeholder identity + an unusable (random) password — no one logs in as guest.
+    marker = uuid.uuid4().hex
+    user = await UserRepository(db).create_guest(
+        email=f"guest+{marker}@guest.local",
+        username=f"guest_{marker}",
+        hashed_password=hash_password(secrets.token_urlsafe(32)),
+    )
+    sub = str(user.id)
+    return GuestTokenPair(
+        access_token=create_access_token(sub, is_guest=True),
+        refresh_token=create_refresh_token(sub, is_guest=True),
+        user_id=sub,
+    )
+
+
+@router.post("/upgrade", status_code=200, response_model=UserOut)
+async def upgrade(
+    body: UpgradeIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> UserOut:
+    """Promote the bearer's guest account to a registered one, in place (Phase 6).
+
+    Preserves the user_id, their sessions, and their BYOK keys. Rejects (409) if the caller is
+    already registered, or if the requested email/username is taken by a different user.
+    """
+    if not current_user.is_guest:
+        raise HTTPException(409, "account is already registered")
+    repo = UserRepository(db)
+    existing_email = await repo.get_by_email(body.email)
+    if existing_email and existing_email.id != current_user.id:
+        raise HTTPException(409, "email already registered")
+    existing_username = await repo.get_by_username(body.username)
+    if existing_username and existing_username.id != current_user.id:
+        raise HTTPException(409, "username already taken")
+    user = await repo.upgrade_guest(
+        current_user,
         email=body.email,
         username=body.username,
         hashed_password=hash_password(body.password),

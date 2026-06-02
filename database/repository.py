@@ -90,6 +90,24 @@ class UserRepository:
         await self.db.flush()
         return user
 
+    async def create_guest(self, *, email: str, username: str, hashed_password: str) -> User:
+        """Create an anonymous guest user (is_guest=True) with placeholder credentials (Phase 6)."""
+        user = User(email=email, username=username, hashed_password=hashed_password, is_guest=True)
+        self.db.add(user)
+        await self.db.flush()
+        return user
+
+    async def upgrade_guest(
+        self, user: User, *, email: str, username: str, hashed_password: str
+    ) -> User:
+        """Promote a guest to a registered account in place — same id, sessions, and BYOK keys."""
+        user.email = email
+        user.username = username
+        user.hashed_password = hashed_password
+        user.is_guest = False
+        await self.db.flush()
+        return user
+
     async def get(self, user_id: str | uuid.UUID) -> User | None:
         if isinstance(user_id, str):
             try:
