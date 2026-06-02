@@ -16,6 +16,11 @@ from integrations.huggingface.client import HuggingFaceClient
 from integrations.s3.client import S3Client
 
 
+def get_graph(request: Request):
+    """Return the compiled LangGraph (built once in lifespan, shared on app.state)."""
+    return request.app.state.graph
+
+
 def get_pinecone_client(request: Request) -> PineconeClient:
     return request.app.state.pinecone
 

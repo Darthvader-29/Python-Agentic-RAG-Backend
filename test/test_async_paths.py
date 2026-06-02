@@ -150,18 +150,28 @@ def test_cleanup_no_files_skips_s3_delete(di_client, fake_pinecone, fake_s3, fak
 
 
 def test_chat_uses_di_clients(di_client, fake_pinecone, fake_embedder, fake_web, fake_user):
-    """chat endpoint resolves all clients from DI; session_has_documents called before routing."""
+    """chat (JSON path) runs the agentic graph with DI clients; a RAG route hits Pinecone.
+
+    Phase 6: the compiled graph resolves provider + pinecone/embedder/web from DI. With a RAG
+    intent + documents present, the vector node embeds the query and searches Pinecone for the
+    >=0.4 relevance gate, then synthesis answers via the injected provider.
+    """
     fake_session = MagicMock()
     fake_session.user_id = fake_user.id
+    # drive a RAG route so the vector node fires (DIRECT would skip retrieval entirely)
+    rag_provider = AsyncMock()
+    rag_provider.route.return_value = "RAG"
+    rag_provider.generate.return_value = "Test answer"
+    app.dependency_overrides[get_llm_provider] = lambda: rag_provider
 
     with (
         patch("app.repo.get_session", new_callable=AsyncMock) as mock_get_sess,
         patch("app.repo.session_has_documents", new_callable=AsyncMock) as mock_hd,
-        patch("app.generate_final_response", new_callable=AsyncMock) as mock_gen,
+        patch("app.repo.load_recent_messages", new_callable=AsyncMock, return_value=[]),
+        patch("app.repo.save_message", new_callable=AsyncMock),
     ):
         mock_get_sess.return_value = fake_session
-        mock_hd.return_value = False
-        mock_gen.return_value = "Test answer"
+        mock_hd.return_value = True
 
         resp = di_client.post(
             "/api/chat",
@@ -173,9 +183,10 @@ def test_chat_uses_di_clients(di_client, fake_pinecone, fake_embedder, fake_web,
         )
 
     assert resp.status_code == 200
-    # Phase 4: session_has_documents is now called from app.py before route_query
+    assert resp.json()["answer"] == "Test answer"
+    # session_has_documents is read by the endpoint to build graph state before invoking
     mock_hd.assert_awaited()
-    # Vector search still goes through Pinecone for relevance checking
+    # the vector node embeds + searches Pinecone for the relevance gate
     fake_pinecone.search_vectors.assert_awaited()
 
 

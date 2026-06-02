@@ -109,7 +109,8 @@ def test_chat_exceeds_limit_returns_429(rl_client, fake_user):
     with (
         patch("app.repo.get_session", new_callable=AsyncMock, return_value=fake_session),
         patch("app.repo.session_has_documents", new_callable=AsyncMock, return_value=False),
-        patch("app.generate_final_response", new_callable=AsyncMock, return_value="answer"),
+        patch("app.repo.load_recent_messages", new_callable=AsyncMock, return_value=[]),
+        patch("app.repo.save_message", new_callable=AsyncMock),
     ):
         statuses = [
             rl_client.post(

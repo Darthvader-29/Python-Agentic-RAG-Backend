@@ -5,22 +5,22 @@ import redis.asyncio as aioredis
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agents.graph import build_graph
+from agents.state import GraphState, Turn
 from auth.dependencies import get_current_user
 from auth.keys_router import router as keys_router
 from auth.router import router as auth_router
 from auth.security import decode_token
-from components.generation import generate_final_response
 from components.preprocessing import EMBEDDING_DIM
-from components.retrieval import retrieve_context
-from components.router import route_query
 from config import settings
 from database import repository as repo
 from database.db_manager import PineconeClient
@@ -29,6 +29,7 @@ from database.session import build_engine, build_sessionmaker
 from dependencies import (
     get_db_session,
     get_embedding_client,
+    get_graph,
     get_pinecone_client,
     get_s3_client,
     get_web_search_client,
@@ -40,6 +41,7 @@ from integrations.s3.client import S3Client
 from llm.base import LLMProvider
 from llm.dependencies import get_llm_provider
 from logging_config import configure_logging
+from sse import sse_event
 from worker.tasks import ingest_document
 
 logger = structlog.get_logger(__name__)
@@ -57,6 +59,8 @@ async def lifespan(app: FastAPI):
     app.state.db_sessionmaker = build_sessionmaker(app.state.db_engine)
     # Phase 5: one pooled Redis client per process (lazy from_url — no network here)
     app.state.redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    # Phase 6: compile the agentic chat graph ONCE per process (pure + stateless — shared)
+    app.state.graph = build_graph()
     logger.info("clients_initialized", environment=settings.ENVIRONMENT)
     yield
     await app.state.redis.aclose()
@@ -355,6 +359,76 @@ async def get_document_status(
 # ========= CHAT =========
 
 
+def _node_stage(node: str) -> str | None:
+    """Map a graph node to the coarse SSE ``status`` stage the frontend renders (None to skip).
+
+    A function (not a module-level dict) keeps app.py free of mutable module state — the
+    horizontal-scale invariant in test_statelessness: any instance can serve any request.
+    """
+    return {
+        "supervisor": "routing",
+        "vector": "retrieving",
+        "web": "searching web",
+        "synthesis": "synthesizing",
+    }.get(node)
+
+
+def _count_context_chunks(state: dict) -> int:
+    """Best-effort count of retrieved chunks for the JSON response (0 when no context).
+
+    ``format_context`` prefixes each chunk with ``CONTEXT N:``; counting those markers across the
+    document context and web result yields the chunk count without re-running retrieval. Both keys
+    are empty strings when their branch was skipped or found nothing relevant.
+    """
+    merged = (state.get("context") or "") + "\n" + (state.get("web_result") or "")
+    return merged.count("CONTEXT ")
+
+
+async def _build_graph_state(
+    payload: ChatRequest,
+    session_id: str,
+    current_user: User,
+    provider: LLMProvider,
+    pinecone: PineconeClient,
+    embedder: HuggingFaceClient,
+    web: DuckDuckGoClient,
+    db: AsyncSession,
+) -> GraphState:
+    """Assemble the per-request initial GraphState (history + has_documents from Postgres)."""
+    has_documents = await repo.session_has_documents(db, session_id)
+    rows = await repo.load_recent_messages(
+        db, session_id=session_id, limit=settings.HISTORY_MAX_TURNS
+    )
+    history: list[Turn] = [{"role": r.role, "content": r.content} for r in rows]  # type: ignore[misc]
+    return GraphState(
+        query=payload.message,
+        session_id=session_id,
+        user_id=str(current_user.id),
+        provider=provider,
+        pinecone=pinecone,
+        embedder=embedder,
+        web=web,
+        history=history,
+        has_documents=has_documents,
+        web_search_allowed=payload.web_search_allowed,
+    )
+
+
+async def _persist_turn(sessionmaker, session_id: str, user_msg: str, answer: str) -> None:
+    """Persist the user turn (always) + the assistant turn (only if non-empty) in a fresh session.
+
+    A StreamingResponse generator runs AFTER the endpoint returns, so the request-scoped db may
+    already be closing; the streaming path passes ``app.state.db_sessionmaker`` to open its own.
+    """
+    async with sessionmaker() as session:
+        await repo.save_message(session, session_id=session_id, role="user", content=user_msg)
+        if answer:
+            await repo.save_message(
+                session, session_id=session_id, role="assistant", content=answer
+            )
+        await session.commit()
+
+
 @app.post("/api/chat")
 @limiter.limit(settings.RATE_LIMIT_CHAT)
 async def chat(
@@ -366,78 +440,101 @@ async def chat(
     embedder: HuggingFaceClient = Depends(get_embedding_client),
     web: DuckDuckGoClient = Depends(get_web_search_client),
     db: AsyncSession = Depends(get_db_session),
+    graph: CompiledStateGraph = Depends(get_graph),
 ):
-    """Main chat endpoint: route → relevance check → retrieve → generate."""
+    """Dual-transport agentic chat (Phase 6).
+
+    Auth + per-user rate limiting gate every request *before* any work or stream opens. The query
+    runs through the compiled LangGraph (supervisor → retrieval → synthesis):
+
+    - ``Accept: text/event-stream`` → token-by-token SSE (``status`` / ``token`` / ``component`` /
+      ``done`` / ``error`` events) via ``graph.astream``.
+    - otherwise → a single JSON object ``{answer, route, context_count, session_id}`` via
+      ``graph.ainvoke``.
+    """
+    session_id = payload.session_id or str(uuid.uuid4())
+    logger.info(
+        "chat_request",
+        message_preview=payload.message[:50],
+        web_search_allowed=payload.web_search_allowed,
+        session_id=session_id[:8],
+        streaming="text/event-stream" in request.headers.get("accept", ""),
+    )
+
+    # Phase 3: ownership check — create session with owner or verify existing ownership.
+    existing = await repo.get_session(db, session_id)
+    if existing is None:
+        await repo.create_session(db, session_id, current_user.id)
+    elif existing.user_id is not None and existing.user_id != current_user.id:
+        raise HTTPException(403, "session does not belong to the current user")
+    elif existing.user_id is None:
+        existing.user_id = current_user.id
+
+    state = await _build_graph_state(
+        payload, session_id, current_user, provider, pinecone, embedder, web, db
+    )
+
+    if "text/event-stream" in request.headers.get("accept", ""):
+        sessionmaker = request.app.state.db_sessionmaker
+
+        async def event_stream():
+            seen_stages: set[str] = set()
+            tokens: list[str] = []
+            route: str | None = None
+            answered = False
+            try:
+                async for mode, chunk in graph.astream(
+                    state,
+                    stream_mode=["updates", "custom"],
+                    config={"configurable": {"stream": True}},
+                ):
+                    if await request.is_disconnected():
+                        break
+                    if mode == "custom":
+                        kind = chunk.get("kind")
+                        if kind == "token":
+                            tokens.append(chunk["text"])
+                            yield sse_event("token", {"text": chunk["text"]})
+                        elif kind == "component":
+                            yield sse_event("component", chunk["data"])
+                    elif mode == "updates":
+                        for node, partial in chunk.items():
+                            stage = _node_stage(node)
+                            if stage and stage not in seen_stages:
+                                seen_stages.add(stage)
+                                yield sse_event("status", {"stage": stage})
+                            if node == "supervisor" and isinstance(partial, dict):
+                                route = partial.get("route", route)
+                final_answer = "".join(tokens).strip()
+                answered = bool(final_answer)
+                yield sse_event("done", {"answer": final_answer, "route": route})
+            except Exception as exc:
+                logger.error("chat_stream_failed", exc_info=True)
+                err: dict = {"detail": str(exc)}
+                if isinstance(exc, AppException) and getattr(exc, "code", None):
+                    err["code"] = exc.code
+                yield sse_event("error", err)
+                return
+            finally:
+                # Persist the turn from a FRESH session (the request db is closing by now).
+                # Skip if the client disconnected before any answer streamed.
+                if not await request.is_disconnected() or answered:
+                    try:
+                        await _persist_turn(
+                            sessionmaker, session_id, payload.message, "".join(tokens).strip()
+                        )
+                    except Exception:
+                        logger.error("chat_stream_persist_failed", exc_info=True)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
+
+    # JSON path: run the graph to completion and persist on the request-scoped session.
     try:
-        session_id = payload.session_id or str(uuid.uuid4())
-        logger.info(
-            "chat_request",
-            message_preview=payload.message[:50],
-            web_search_allowed=payload.web_search_allowed,
-            session_id=session_id[:8],
-        )
-
-        # Phase 3: ownership check — create session with owner or verify existing ownership
-        existing = await repo.get_session(db, session_id)
-        if existing is None:
-            await repo.create_session(db, session_id, current_user.id)
-        elif existing.user_id is not None and existing.user_id != current_user.id:
-            raise HTTPException(403, "session does not belong to the current user")
-        elif existing.user_id is None:
-            existing.user_id = current_user.id
-
-        # Phase 4: get has_documents from DB for routing, then check Pinecone relevance
-        has_documents_db = await repo.session_has_documents(db, session_id)
-
-        base_route = await route_query(
-            provider,
-            payload.message,
-            has_documents=has_documents_db,
-            web_search_allowed=payload.web_search_allowed,
-        )
-
-        has_docs, docs_relevant = await check_docs_relevant(
-            payload.message, session_id, pinecone, embedder
-        )
-
-        final_route = decide_combined_route(
-            base_route,
-            has_documents=has_docs,
-            docs_relevant=docs_relevant,
-            web_allowed=payload.web_search_allowed,
-        )
-
-        logger.info(
-            "routing_decision",
-            base_route=base_route,
-            has_docs=has_docs,
-            docs_relevant=docs_relevant,
-            final_route=final_route,
-        )
-
-        context = await retrieve_context(
-            payload.message,
-            final_route,
-            session_id,
-            payload.web_search_allowed,
-            pinecone,
-            embedder,
-            web,
-        )
-
-        answer = await generate_final_response(
-            provider,
-            payload.message,
-            context,
-            final_route,  # type: ignore[arg-type]
-        )
-
-        return {
-            "answer": answer,
-            "route": final_route,
-            "context_count": len(context),
-            "session_id": session_id,
-        }
+        result = await graph.ainvoke(state)
     except (AppException, HTTPException):
         raise
     except Exception as e:
@@ -445,6 +542,17 @@ async def chat(
         raise AppException(
             status_code=500, detail="free tier Limit Reached for API please try again later"
         ) from e
+
+    answer = result.get("answer", "")
+    await repo.save_message(db, session_id=session_id, role="user", content=payload.message)
+    if answer:
+        await repo.save_message(db, session_id=session_id, role="assistant", content=answer)
+    return {
+        "answer": answer,
+        "route": result.get("route"),
+        "context_count": _count_context_chunks(result),
+        "session_id": session_id,
+    }
 
 
 # ========= CLEANUP =========
