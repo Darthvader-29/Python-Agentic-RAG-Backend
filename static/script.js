@@ -36,7 +36,7 @@ async function handleAuth(e) {
   try {
     if (_currentTab === "register") {
       const username = document.getElementById("username").value.trim();
-      const regResp = await fetch("/auth/register", {
+      const regResp = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, username, password }),
@@ -48,7 +48,7 @@ async function handleAuth(e) {
     }
 
     // Login (also runs after successful registration)
-    const loginResp = await fetch("/auth/login", {
+    const loginResp = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -89,7 +89,7 @@ async function maybeRefresh() {
   const refresh = getRefresh();
   if (!refresh) return false;
   try {
-    const resp = await fetch("/auth/refresh", {
+    const resp = await fetch("/api/auth/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refresh }),

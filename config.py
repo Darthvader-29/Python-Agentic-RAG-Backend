@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     RATE_LIMIT_UPLOAD: str = "10/minute"
     RATE_LIMIT_DEFAULT: str = "120/minute"
 
+    # --- Phase 6: agentic graph, conversation memory, freemium ladder ---
+    HISTORY_MAX_TURNS: int = 6  # last-N turns (verbatim) fed to supervisor + synthesis
+    # Free-tier guards (operator's shared Google key): per-user fairness AND a global ceiling.
+    FREE_TIER_DAILY_USER_QUERIES: int = 10
+    FREE_TIER_GLOBAL_DAILY_CALLS: int = 1200
+    FREE_TIER_MODEL: str = "gemini-2.5-flash"
+    # BYOK cheap/strong model tiers (route -> cheap classifier, synth -> strong writer).
+    TIER_ROUTE_MODEL_GEMINI: str = "gemini-2.5-flash"
+    TIER_SYNTH_MODEL_GEMINI: str = "gemini-2.5-pro"
+    TIER_ROUTE_MODEL_OPENAI: str = "gpt-4o-mini"
+    TIER_SYNTH_MODEL_OPENAI: str = "gpt-4o"
+    TIER_ROUTE_MODEL_ANTHROPIC: str = "claude-3-5-haiku-latest"
+    TIER_SYNTH_MODEL_ANTHROPIC: str = "claude-3-5-sonnet-latest"
+
     @property
     def celery_broker_url(self) -> str:
         return self.CELERY_BROKER_URL or self.REDIS_URL
@@ -64,6 +78,22 @@ class Settings(BaseSettings):
     @property
     def rate_limit_storage_uri(self) -> str:
         return self.RATE_LIMIT_STORAGE_URI or self.REDIS_URL
+
+    def tier_route_model(self, provider: str) -> str:
+        """BYOK cheap-tier model id for routing, by provider (falls back to DEFAULT_LLM_MODEL)."""
+        return {
+            "gemini": self.TIER_ROUTE_MODEL_GEMINI,
+            "openai": self.TIER_ROUTE_MODEL_OPENAI,
+            "anthropic": self.TIER_ROUTE_MODEL_ANTHROPIC,
+        }.get(provider.lower(), self.DEFAULT_LLM_MODEL)
+
+    def tier_synth_model(self, provider: str) -> str:
+        """BYOK strong-tier model id for synthesis, by provider (falls back to DEFAULT_LLM_MODEL)."""
+        return {
+            "gemini": self.TIER_SYNTH_MODEL_GEMINI,
+            "openai": self.TIER_SYNTH_MODEL_OPENAI,
+            "anthropic": self.TIER_SYNTH_MODEL_ANTHROPIC,
+        }.get(provider.lower(), self.DEFAULT_LLM_MODEL)
 
     @field_validator("LLM_KEY_ENCRYPTION_KEY")
     @classmethod

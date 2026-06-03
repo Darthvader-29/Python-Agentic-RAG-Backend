@@ -29,25 +29,38 @@ def verify_password(raw: str, hashed: str) -> bool:
         return False
 
 
-def _create_token(subject: str, token_type: str, ttl: timedelta) -> str:
+def _create_token(subject: str, token_type: str, ttl: timedelta, is_guest: bool) -> str:
     now = datetime.now(UTC)
-    payload = {"sub": subject, "type": token_type, "iat": now, "exp": now + ttl}
+    # is_guest lets the client tell an anonymous session from a registered one after a reload.
+    payload = {
+        "sub": subject,
+        "type": token_type,
+        "is_guest": is_guest,
+        "iat": now,
+        "exp": now + ttl,
+    }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_access_token(subject: str, ttl: timedelta | None = None) -> str:
+def create_access_token(
+    subject: str, ttl: timedelta | None = None, *, is_guest: bool = False
+) -> str:
     return _create_token(
         subject,
         "access",
         ttl or timedelta(minutes=settings.ACCESS_TOKEN_TTL_MINUTES),
+        is_guest,
     )
 
 
-def create_refresh_token(subject: str, ttl: timedelta | None = None) -> str:
+def create_refresh_token(
+    subject: str, ttl: timedelta | None = None, *, is_guest: bool = False
+) -> str:
     return _create_token(
         subject,
         "refresh",
         ttl or timedelta(days=settings.REFRESH_TOKEN_TTL_DAYS),
+        is_guest,
     )
 
 

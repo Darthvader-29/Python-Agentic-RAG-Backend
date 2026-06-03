@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from auth.crypto import decrypt_key
-from auth.keys_router import add_key, delete_key, rotate_key
+from auth.keys_router import add_key, delete_key, list_keys, rotate_key
 from auth.schemas import KeyIn
 from auth.security import hash_password
 from database.models import UserLLMKey
@@ -114,6 +114,51 @@ async def test_user_scoping_different_users_independent(db_session):
     assert row_a.ciphertext != row_b.ciphertext
     assert decrypt_key(row_a.ciphertext) == "key-a"
     assert decrypt_key(row_b.ciphertext) == "key-b"
+
+
+async def test_list_keys_returns_provider_rows(db_session):
+    user = await _make_user(db_session, "listkeys@test.com", "listkeysuser")
+    await add_key(KeyIn(provider="gemini", api_key="g-key"), current_user=user, db=db_session)
+    await add_key(KeyIn(provider="openai", api_key="o-key"), current_user=user, db=db_session)
+
+    rows = await list_keys(current_user=user, db=db_session)
+
+    providers = {r.provider for r in rows}
+    assert providers == {"gemini", "openai"}
+    for r in rows:
+        assert r.id is not None
+        assert r.created_at is not None
+
+
+async def test_list_keys_never_leaks_ciphertext(db_session):
+    """The list response must expose id/provider/created_at only — never the ciphertext field."""
+    user = await _make_user(db_session, "noleaks@test.com", "noleaksuser")
+    await add_key(
+        KeyIn(provider="gemini", api_key=_PLAINTEXT_KEY), current_user=user, db=db_session
+    )
+
+    rows = await list_keys(current_user=user, db=db_session)
+
+    assert len(rows) == 1
+    dumped = rows[0].model_dump()
+    assert "ciphertext" not in dumped
+    assert _PLAINTEXT_KEY not in str(dumped)
+
+
+async def test_list_keys_scoped_to_user(db_session):
+    user_a = await _make_user(db_session, "la@test.com", "lauser")
+    user_b = await _make_user(db_session, "lb@test.com", "lbuser")
+    await add_key(KeyIn(provider="gemini", api_key="a"), current_user=user_a, db=db_session)
+    await add_key(KeyIn(provider="openai", api_key="b"), current_user=user_b, db=db_session)
+
+    rows_a = await list_keys(current_user=user_a, db=db_session)
+    assert {r.provider for r in rows_a} == {"gemini"}
+
+
+async def test_list_keys_empty_when_no_keys(db_session):
+    user = await _make_user(db_session, "empty@test.com", "emptyuser")
+    rows = await list_keys(current_user=user, db=db_session)
+    assert rows == []
 
 
 async def test_plaintext_key_never_appears_in_logs(db_session, capfd):

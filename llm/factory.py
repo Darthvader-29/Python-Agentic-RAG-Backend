@@ -15,9 +15,27 @@ _REGISTRY: dict[str, type] = {
 }
 
 
-def build_provider(provider_name: str, api_key: str, model: str | None = None) -> LLMProvider:
-    """Instantiate the named provider adapter with the given API key."""
+def build_provider(
+    provider_name: str,
+    api_key: str,
+    model: str | None = None,
+    *,
+    route_model: str | None = None,
+    synth_model: str | None = None,
+) -> LLMProvider:
+    """Instantiate the named provider adapter with the given API key.
+
+    Per-node model tiering (Phase 6): one provider instance can serve two models — a cheap
+    ``route_model`` for the supervisor classification and a strong ``synth_model`` for
+    generation/streaming. Resolution, per slot, is ``route_model`` / ``synth_model`` first,
+    else the single ``model`` arg, else the adapter's own default (``None`` → adapter default).
+
+    Backward compatible: passing only ``model`` (or nothing) sets both slots to that value, so
+    existing single-model callers behave exactly as before.
+    """
     cls = _REGISTRY.get(provider_name.lower())
     if cls is None:
         raise LLMResponseError(f"unknown LLM provider: {provider_name!r}")
-    return cls(api_key=api_key, model=model) if model else cls(api_key=api_key)
+    resolved_route = route_model or model
+    resolved_synth = synth_model or model
+    return cls(api_key=api_key, route_model=resolved_route, synth_model=resolved_synth)

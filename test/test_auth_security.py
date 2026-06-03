@@ -32,6 +32,11 @@ def test_hash_is_different_each_time():
     assert h1 != h2  # bcrypt salts each hash
 
 
+def test_verify_password_malformed_hash_returns_false():
+    """A corrupt/non-bcrypt hash must return False, not raise (bcrypt raises ValueError)."""
+    assert verify_password("anything", "not-a-bcrypt-hash") is False
+
+
 def test_access_token_roundtrip():
     token = create_access_token(subject="user-123")
     claims = decode_token(token)
@@ -78,3 +83,29 @@ def test_wrong_secret_rejected():
     token = pyjwt.encode({"sub": "x", "type": "access"}, "wrong-secret", algorithm="HS256")
     with pytest.raises(jwt.InvalidSignatureError):
         decode_token(token)
+
+
+# ── Phase 6: is_guest claim ───────────────────────────────────────────────────
+
+
+def test_tokens_default_is_guest_false():
+    """Registered/normal tokens carry is_guest=False so the client doesn't mistake them."""
+    access = decode_token(create_access_token(subject="u-1"))
+    refresh = decode_token(create_refresh_token(subject="u-1"))
+    assert access["is_guest"] is False
+    assert refresh["is_guest"] is False
+
+
+def test_guest_access_token_carries_is_guest_true():
+    token = create_access_token(subject="guest-1", is_guest=True)
+    claims = decode_token(token)
+    assert claims["is_guest"] is True
+    assert claims["type"] == "access"
+    assert claims["sub"] == "guest-1"
+
+
+def test_guest_refresh_token_carries_is_guest_true():
+    token = create_refresh_token(subject="guest-1", is_guest=True)
+    claims = decode_token(token)
+    assert claims["is_guest"] is True
+    assert claims["type"] == "refresh"
